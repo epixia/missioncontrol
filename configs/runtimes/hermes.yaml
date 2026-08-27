@@ -1,0 +1,10 @@
+# Runtime pin record — see docs/architecture/00-foundational-architecture.md section 10.
+# Detect -> Review -> Test -> Approve -> Deploy. Never auto-upgrade a production runtime.
+runtime:
+  type: hermes
+  source:
+    repository: https://github.com/NousResearch/hermes-agent
+    version: "v2026.8.19" # release name: Hermes Agent v0.20.5
+    commit: "791e2ae3257e211d14ca77e654dfe10ee1976a1c"
+  adapter_version: 1
+  date_validated: "2026-08-26"

@@ -1,0 +1,8 @@
+runtime:
+  type: claude_code
+  source:
+    repository: https://github.com/anthropics/claude-code # docs/issues only; ships via npm
+    version: "2.1.247" # @anthropic-ai/claude-code npm version
+    commit: null # proprietary, no public source to pin a commit against
+  adapter_version: 1
+  date_validated: "2026-08-27" # matches the version actually installed on this host

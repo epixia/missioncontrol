@@ -1,0 +1,8 @@
+runtime:
+  type: openclaw
+  source:
+    repository: https://github.com/openclaw/openclaw
+    version: "v2026.7.1-2"
+    commit: "b7d9be02093061e7879bea571b5ef6fd2605c909" # main, for reference only — pin to the release tag
+  adapter_version: 1
+  date_validated: "2026-08-26"

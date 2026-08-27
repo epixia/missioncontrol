@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mission Control</title>
+<style>
+  :root {
+    --bg: #0a0a0c; --panel: #111114; --border: #2a2a30; --border-lit: #3a3a42;
+    --text: #d8d8dc; --dim: #6b6b74; --dimmer: #4a4a52;
+    --accent: #ff8c42; --green: #3fb950; --red: #f85149; --blue: #58a6ff; --white: #f0f0f2;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: "SF Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+         background: var(--bg); color: var(--text); margin: 0; padding: 1.25rem; font-size: 13px; }
+  a, button, input, select, textarea { font-family: inherit; font-size: inherit; }
+  .hidden { display: none !important; }
+
+  /* header */
+  #topbar { display: flex; justify-content: space-between; align-items: baseline;
+            border: 1px solid var(--border); padding: 0.5rem 0.9rem; border-radius: 3px; margin-bottom: 0.6rem; }
+  #topbar .title { color: var(--accent); font-weight: bold; letter-spacing: 0.02em; }
+  #topbar .title .sigil { margin-right: 0.4rem; }
+  #topbar .path { color: var(--dim); margin-left: 0.6rem; }
+  #topbar .stats { color: var(--dim); }
+  #topbar .stats b { color: var(--text); font-weight: normal; }
+  #topbar .stats span { margin-left: 1.1rem; }
+
+  /* status/progress bar */
+  #statusbar { display: flex; align-items: center; gap: 0.7rem; border: 1px solid var(--border);
+               border-radius: 3px; padding: 0.4rem 0.9rem; margin-bottom: 0.6rem; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-running { background: var(--accent); }
+  .dot-succeeded { background: var(--green); }
+  .dot-failed { background: var(--red); }
+  .dot-pending, .dot-unsupported { background: var(--dimmer); }
+  #statusbar .label { text-transform: uppercase; letter-spacing: 0.05em; width: 6.5rem; }
+  #progressTrack { flex: 1; height: 10px; background: var(--panel); border-radius: 2px; overflow: hidden;
+                   border: 1px solid var(--border); }
+  #progressFill { height: 100%; background: repeating-linear-gradient(45deg, var(--accent), var(--accent) 3px,
+                  #7a4420 3px, #7a4420 6px); transition: width 0.3s; }
+  #statusbar .frac { color: var(--dim); width: 4rem; text-align: right; }
+
+  /* panels */
+  .panel { border: 1px solid var(--border); border-radius: 3px; padding: 0.7rem 0.9rem; }
+  .panel h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim);
+              margin: 0 0 0.6rem; display: flex; justify-content: space-between; font-weight: normal; }
+  .panel h2 .count { color: var(--dimmer); }
+
+  #missionsGrid { display: flex; flex-direction: column; gap: 0.5rem; }
+  .mission-row { border: 1px solid var(--border); border-radius: 3px; padding: 0.55rem 0.9rem;
+                 display: flex; align-items: center; gap: 1rem; cursor: pointer; }
+  .mission-row:hover { border-color: var(--border-lit); background: var(--panel); }
+  .mission-row .name { color: var(--white); flex: 1; }
+  .mission-row .meta { color: var(--dim); font-size: 0.85em; }
+
+  #detailGrid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 0.6rem; margin-top: 0.6rem; }
+  #transcriptPanel { margin-top: 0.6rem; }
+
+  .task-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.4rem; border-radius: 2px;
+               cursor: pointer; font-size: 0.92em; }
+  .task-item:hover { background: var(--panel); }
+  .task-item.selected { background: var(--white); color: var(--bg); }
+  .task-item.selected .meta { color: #444; }
+  .task-item .icon { width: 1.1rem; text-align: center; }
+  .task-item .icon.succeeded { color: var(--green); }
+  .task-item .icon.failed { color: var(--red); }
+  .task-item .icon.running { color: var(--accent); }
+  .task-item .icon.pending, .task-item .icon.unsupported { color: var(--dimmer); }
+  .task-item .prompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-item .meta { color: var(--dim); font-size: 0.85em; }
+
+  #logList { display: flex; flex-direction: column; gap: 0.15rem; max-height: 220px; overflow-y: auto;
+             font-size: 0.85em; margin-top: 0.7rem; }
+  #logList .row { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #logList .row .ago { color: var(--dimmer); display: inline-block; width: 4.5rem; }
+  #logList .row .st-succeeded { color: var(--green); }
+  #logList .row .st-failed { color: var(--red); }
+  #logList .row .st-running { color: var(--accent); }
+
+  #activeTaskMeta { color: var(--dim); line-height: 1.7; }
+  #activeTaskMeta b { color: var(--text); font-weight: normal; }
+  #activeTaskMeta .prompt-block { border-left: 2px solid var(--border-lit); padding: 0.5rem 0.8rem;
+                                   margin-top: 0.5rem; color: var(--text); }
+
+  #transcript { background: #050506; border: 1px solid var(--border); border-radius: 3px; padding: 0.8rem 0.9rem;
+                height: 340px; overflow-y: auto; }
+  .t-line { padding: 0.12rem 0; white-space: pre-wrap; word-break: break-word; }
+  .t-thought { color: var(--accent); }
+  .t-thought::before { content: "∴ "; }
+  .t-tool { color: var(--white); }
+  .t-tool .verb { font-weight: bold; margin-right: 0.5rem; }
+  .t-tool-result { color: var(--dim); padding-left: 1.4rem; }
+  .t-tool-result::before { content: "✓ "; color: var(--green); }
+  .t-text { color: var(--text); }
+  .t-error { color: var(--red); }
+  .t-error::before { content: "✗ "; }
+  .t-final { color: var(--green); border-top: 1px solid var(--border); margin-top: 0.4rem; padding-top: 0.4rem; }
+  .t-raw { color: var(--dimmer); font-size: 0.88em; }
+  .t-empty { color: var(--dimmer); }
+
+  form.inline { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.6rem 0; }
+  input, select { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+         border-radius: 3px; padding: 0.35rem 0.55rem; }
+  input[type=text] { flex: 1; min-width: 180px; }
+  button { background: var(--accent); color: #1a0e04; border: none; border-radius: 3px; padding: 0.35rem 0.8rem;
+         cursor: pointer; font-weight: bold; }
+  button:hover { opacity: 0.85; }
+  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--border); font-weight: normal; }
+
+  #footer { display: flex; gap: 1.5rem; color: var(--dim); border: 1px solid var(--border); border-radius: 3px;
+            padding: 0.4rem 0.9rem; margin-top: 0.6rem; font-size: 0.85em; }
+  #footer kbd { color: var(--white); }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div><span class="title"><span class="sigil">∴</span>MISSION CONTROL</span><span class="path" id="topbarPath">/</span></div>
+  <div class="stats" id="topbarStats"></div>
+</div>
+
+<!-- MISSIONS LIST VIEW -->
+<div id="viewMissions">
+  <div class="panel">
+    <h2>New Mission</h2>
+    <form class="inline" id="missionForm">
+      <input type="text" id="missionName" placeholder="Mission name" required />
+      <button type="submit">Create</button>
+    </form>
+  </div>
+  <div class="panel" style="margin-top:0.6rem;">
+    <h2>Missions <span class="count" id="missionsCount"></span></h2>
+    <div id="missionsGrid"><span class="t-empty">loading…</span></div>
+  </div>
+</div>
+
+<!-- MISSION DETAIL VIEW -->
+<div id="viewDetail" class="hidden">
+  <div id="statusbar">
+    <span class="dot" id="missionDot"></span>
+    <span class="label" id="missionStatusLabel">—</span>
+    <div id="progressTrack"><div id="progressFill" style="width:0%"></div></div>
+    <span class="frac" id="missionFrac">0/0</span>
+    <button class="ghost" id="backBtn">← Missions</button>
+  </div>
+
+  <form class="inline" id="taskForm">
+    <select name="runtime">
+      <option value="claude_code">claude_code</option>
+      <option value="codex">codex</option>
+      <option value="hermes">hermes</option>
+      <option value="openclaw">openclaw</option>
+    </select>
+    <input type="text" name="prompt" placeholder="Task prompt" required />
+    <input type="text" name="workspace_path" placeholder="Workspace path" value="." required />
+    <button type="submit">Run task</button>
+  </form>
+
+  <div id="detailGrid">
+    <div class="panel">
+      <h2>Active Task <span class="count" id="activeTaskId"></span></h2>
+      <div id="activeTaskMeta"><span class="t-empty">select a task from the list →</span></div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2>Tasks <span class="count" id="tasksCount"></span></h2>
+        <div id="taskList"></div>
+      </div>
+      <div class="panel" style="margin-top:0.6rem;">
+        <h2>Progress Log</h2>
+        <div id="logList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="transcriptPanel">
+    <h2>Active Worker <span class="count" id="transcriptSub"></span></h2>
+    <div id="transcript"><div class="t-empty">no task selected</div></div>
+  </div>
+
+  <div id="footer">
+    <span><kbd>Tab</kbd> next task</span>
+    <span><kbd>Esc</kbd> back to missions</span>
+    <span><kbd>R</kbd> refresh</span>
+  </div>
+</div>
+
+<script>
+const state = { missions: [], currentMissionId: null, currentTaskId: null, eventSource: null };
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function timeAgo(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return Math.floor(s) + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ANSI escape codes leak into Hermes's plain-text stdout (colored CLI errors) —
+// strip them so raw control sequences don't render as garbage in the DOM.
+function stripAnsi(s) {
+  return String(s).replace(/\x1b\[[0-9;]*m/g, "").replace(/\[[0-9;]+m/g, "");
+}
+
+// ---------- Missions list view ----------
+
+async function loadMissions() {
+  const missions = await fetchJSON("/api/missions");
+  state.missions = missions;
+  const grid = document.getElementById("missionsGrid");
+  document.getElementById("missionsCount").textContent = missions.length;
+  if (!missions.length) { grid.innerHTML = '<span class="t-empty">no missions yet</span>'; return; }
+  grid.innerHTML = "";
+  for (const { mission, tasks } of missions) {
+    const cost = tasks.reduce((a, t) => a + t.total_cost_usd, 0);
+    const done = tasks.filter(t => t.status === "succeeded").length;
+    const failed = tasks.filter(t => t.status === "failed").length;
+    const row = document.createElement("div");
+    row.className = "mission-row";
+    row.innerHTML = `<span class="dot ${failed ? 'dot-failed' : done === tasks.length && tasks.length ? 'dot-succeeded' : 'dot-running'}"></span>
+      <span class="name">${escapeHtml(mission.name)}</span>
+      <span class="meta">${tasks.length} task${tasks.length===1?'':'s'}</span>
+      <span class="meta">$${cost.toFixed(4)}</span>
+      <span class="meta">${timeAgo(mission.created_at)}</span>`;
+    row.addEventListener("click", () => openMission(mission.id));
+    grid.appendChild(row);
+  }
+}
+
+document.getElementById("missionForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = document.getElementById("missionName").value;
+  const mission = await fetchJSON("/api/missions", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  });
+  document.getElementById("missionName").value = "";
+  await loadMissions();
+  openMission(mission.id);
+});
+
+// ---------- Mission detail view ----------
+
+function openMission(missionId) {
+  state.currentMissionId = missionId;
+  state.currentTaskId = null;
+  document.getElementById("viewMissions").classList.add("hidden");
+  document.getElementById("viewDetail").classList.remove("hidden");
+  refreshDetail();
+}
+
+function closeMission() {
+  if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
+  state.currentMissionId = null;
+  state.currentTaskId = null;
+  document.getElementById("viewDetail").classList.add("hidden");
+  document.getElementById("viewMissions").classList.remove("hidden");
+  document.getElementById("topbarPath").textContent = "/";
+  document.getElementById("topbarStats").textContent = "";
+  loadMissions();
+}
+document.getElementById("backBtn").addEventListener("click", closeMission);
+
+document.getElementById("taskForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const task = await fetchJSON(`/api/missions/${state.currentMissionId}/tasks`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(fd)),
+  });
+  e.target.querySelector('[name=prompt]').value = "";
+  await refreshDetail();
+  selectTask(task.id);
+});
+
+async function refreshDetail() {
+  const missionId = state.currentMissionId;
+  const missions = await fetchJSON("/api/missions");
+  const entry = missions.find(m => m.mission.id === missionId);
+  if (!entry) { closeMission(); return; }
+  const { mission, tasks } = entry;
+
+  document.getElementById("topbarPath").textContent = "/" + mission.name;
+  const cost = tasks.reduce((a, t) => a + t.total_cost_usd, 0);
+  const inTok = tasks.reduce((a, t) => a + t.total_input_tokens, 0);
+  const outTok = tasks.reduce((a, t) => a + t.total_output_tokens, 0);
+  document.getElementById("topbarStats").innerHTML =
+    `<span>Cost <b>$${cost.toFixed(4)}</b></span><span>Input <b>${inTok}</b></span><span>Output <b>${outTok}</b></span>`;
+
+  const done = tasks.filter(t => ["succeeded","failed","unsupported"].includes(t.status)).length;
+  const anyRunning = tasks.some(t => t.status === "running" || t.status === "pending");
+  const anyFailed = tasks.some(t => t.status === "failed");
+  document.getElementById("missionDot").className = "dot " + (anyRunning ? "dot-running" : anyFailed ? "dot-failed" : "dot-succeeded");
+  document.getElementById("missionStatusLabel").textContent = anyRunning ? "RUNNING" : anyFailed ? "FAILED" : (tasks.length ? "SUCCEEDED" : "IDLE");
+  document.getElementById("missionFrac").textContent = `${done}/${tasks.length}`;
+  document.getElementById("progressFill").style.width = tasks.length ? `${(done/tasks.length)*100}%` : "0%";
+
+  document.getElementById("tasksCount").textContent = `${tasks.length}`;
+  const list = document.getElementById("taskList");
+  list.innerHTML = "";
+  if (!tasks.length) list.innerHTML = '<span class="t-empty">no tasks yet</span>';
+  for (const t of tasks) {
+    const icons = { succeeded: "✓", failed: "✗", running: "●", pending: "○", unsupported: "–" };
+    const row = document.createElement("div");
+    row.className = "task-item" + (t.id === state.currentTaskId ? " selected" : "");
+    row.innerHTML = `<span class="icon ${t.status}">${icons[t.status] || "?"}</span>
+      <span class="prompt">${escapeHtml(t.prompt)}</span>
+      <span class="meta">${escapeHtml(t.runtime)}</span>`;
+    row.addEventListener("click", () => selectTask(t.id));
+    list.appendChild(row);
+  }
+
+  const log = await fetchJSON(`/api/missions/${missionId}/log`);
+  const logList = document.getElementById("logList");
+  logList.innerHTML = log.length ? "" : '<span class="t-empty">no activity yet</span>';
+  for (const entry of log) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="ago">${timeAgo(entry.timestamp)}</span> <span class="st-${entry.status}">${entry.runtime}</span> → ${entry.status}`;
+    logList.appendChild(row);
+  }
+
+  if (state.currentTaskId) {
+    const current = tasks.find(t => t.id === state.currentTaskId);
+    if (current) renderActiveTaskMeta(current);
+  }
+
+  window._detailTasks = tasks;
+}
+
+function renderActiveTaskMeta(task) {
+  document.getElementById("activeTaskId").textContent = task.id.slice(0, 8);
+  document.getElementById("activeTaskMeta").innerHTML = `
+    <div><b>runtime</b> ${escapeHtml(task.runtime)} &nbsp; <b>status</b> ${task.status} &nbsp; <b>cost</b> $${task.total_cost_usd.toFixed(4)}</div>
+    <div><b>workspace</b> ${escapeHtml(task.workspace_path)}</div>
+    ${task.session_id ? `<div><b>session</b> ${task.session_id}</div>` : ""}
+    ${task.error_detail ? `<div class="t-error" style="margin-top:0.4rem;">${escapeHtml(task.error_detail)}</div>` : ""}
+    <div class="prompt-block">${escapeHtml(task.prompt)}</div>
+  `;
+  document.getElementById("transcriptSub").textContent = task.runtime;
+}
+
+function selectTask(taskId) {
+  state.currentTaskId = taskId;
+  if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
+  const tasks = window._detailTasks || [];
+  const task = tasks.find(t => t.id === taskId);
+  if (task) renderActiveTaskMeta(task);
+  refreshDetail();
+  watchTranscript(taskId);
+}
+
+function watchTranscript(taskId) {
+  const box = document.getElementById("transcript");
+  box.innerHTML = "";
+  const task = (window._detailTasks || []).find(t => t.id === taskId);
+  const runtime = task ? task.runtime : "";
+  const es = new EventSource(`/api/tasks/${taskId}/events`);
+  state.eventSource = es;
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    appendTranscriptLine(box, runtime, data.event_type, data.payload);
+  };
+  es.addEventListener("done", () => { es.close(); refreshDetail(); });
+  es.onerror = () => es.close();
+}
+
+function appendLine(box, cls, html) {
+  const div = document.createElement("div");
+  div.className = "t-line " + cls;
+  div.innerHTML = html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+// Rendering fidelity is intentionally uneven across runtimes: Claude Code's
+// stream-json gives real structured tool_use/text blocks, so it gets a rich
+// transcript. Codex's success-path schema is unverified (no API credits to
+// confirm it against) and Hermes's quiet mode only ever gives plain stdout
+// lines — both get an honest, simpler line-per-event view instead of invented
+// structure.
+function appendTranscriptLine(box, runtime, eventType, payload) {
+  if (runtime === "claude_code") return appendClaudeCodeLine(box, eventType, payload);
+  if (runtime === "codex") return appendCodexLine(box, eventType, payload);
+  if (runtime === "hermes") return appendHermesLine(box, eventType, payload);
+  appendLine(box, "t-raw", escapeHtml(JSON.stringify(payload)).slice(0, 400));
+}
+
+function appendClaudeCodeLine(box, eventType, payload) {
+  if (["system", "stream_event", "rate_limit_event"].includes(eventType)) return; // noisy, redundant with 'assistant'/'result'
+  if (eventType === "assistant") {
+    for (const block of (payload.message?.content || [])) {
+      if (block.type === "text" && block.text.trim()) appendLine(box, "t-thought", escapeHtml(block.text));
+      if (block.type === "tool_use") {
+        const arg = block.input?.file_path || block.input?.command || block.input?.pattern || JSON.stringify(block.input).slice(0, 80);
+        appendLine(box, "t-tool", `<span class="verb">${escapeHtml(block.name)}</span>${escapeHtml(arg)}`);
+      }
+    }
+    return;
+  }
+  if (eventType === "user") {
+    for (const block of (payload.message?.content || [])) {
+      if (block.type === "tool_result") {
+        const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+        appendLine(box, "t-tool-result", escapeHtml((text || "").slice(0, 200)));
+      }
+    }
+    return;
+  }
+  if (eventType === "result") {
+    appendLine(box, "t-final", `completed — ${escapeHtml(payload.result || "")} ($${(payload.total_cost_usd || 0).toFixed(4)})`);
+  }
+}
+
+function appendCodexLine(box, eventType, payload) {
+  if (eventType === "thread.started") return appendLine(box, "t-raw", `session ${payload.thread_id}`);
+  if (eventType === "turn.started") return; // too granular to show on its own
+  if (eventType === "error") return appendLine(box, "t-error", escapeHtml(payload.message || ""));
+  if (eventType === "turn.failed") return appendLine(box, "t-error", escapeHtml(payload.error?.message || "turn failed"));
+  // Unconfirmed success-path shape (item.*/turn.completed) — fall back honestly rather than guess structure.
+  const text = payload.message || payload.text || payload.item?.text;
+  if (text) return appendLine(box, "t-text", escapeHtml(text));
+  appendLine(box, "t-raw", escapeHtml(JSON.stringify(payload)).slice(0, 300));
+}
+
+function appendHermesLine(box, eventType, payload) {
+  const line = stripAnsi(payload.line || "");
+  if (!line.trim()) return;
+  const cls = /error|not configured/i.test(line) ? "t-error" : "t-text";
+  appendLine(box, cls, escapeHtml(line));
+}
+
+// ---------- health + keyboard ----------
+
+async function loadHealth() {
+  const health = await fetchJSON("/api/health");
+  const bits = Object.entries(health.runtimes).map(([n, ok]) =>
+    `<span style="color:${ok ? 'var(--green)' : 'var(--red)'}">${n}</span>`).join(" · ");
+  document.getElementById("topbarStats").innerHTML = state.currentMissionId ? document.getElementById("topbarStats").innerHTML : bits;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "SELECT") return;
+  if (e.key === "Escape" && state.currentMissionId) closeMission();
+  if (e.key === "r" || e.key === "R") state.currentMissionId ? refreshDetail() : loadMissions();
+  if (e.key === "Tab" && state.currentMissionId) {
+    e.preventDefault();
+    const tasks = window._detailTasks || [];
+    if (!tasks.length) return;
+    const idx = tasks.findIndex(t => t.id === state.currentTaskId);
+    selectTask(tasks[(idx + 1) % tasks.length].id);
+  }
+});
+
+loadHealth();
+loadMissions();
+setInterval(() => { state.currentMissionId ? refreshDetail() : loadMissions(); }, 4000);
+</script>
+</body>
+</html>

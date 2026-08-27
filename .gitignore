@@ -1,0 +1,15 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local platform state (mission DB, per-runtime state dirs)
+*.db
+.server.pid
+.pytest_cache/

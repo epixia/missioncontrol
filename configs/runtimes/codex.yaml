@@ -1,0 +1,12 @@
+runtime:
+  type: codex
+  source:
+    repository: https://github.com/openai/codex
+    version: "0.122.0" # rust-v0.122.0 — the build actually installed and adapter-tested on this host
+    commit: null # pin to the release tag, not a main commit; alpha builds ship daily
+  adapter_version: 1
+  date_validated: "2026-08-27"
+  # Detect: a newer stable release (0.150.1) was observed upstream during
+  # architecture research on 2026-08-26. Per the mandatory
+  # Detect -> Review -> Test -> Approve -> Deploy workflow, do not bump
+  # `version` here until it has been through that process.
