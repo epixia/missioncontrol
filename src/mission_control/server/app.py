@@ -25,6 +25,7 @@ from mission_control.adapters.types import (
     RuntimeAdapterError,
     RuntimeConfig,
     RuntimeType,
+    SessionHandle,
     SessionRequest,
     Task,
     Workspace,
@@ -47,6 +48,16 @@ _RUNTIME_STATE_ROOT = Path.home() / ".mission-control" / "runtimes"
 # only holds a weak reference to a Task, per the asyncio docs' documented
 # footgun. Discarded automatically once the task finishes.
 _background_tasks: set[asyncio.Task] = set()
+
+# Chat/interrupt infrastructure (see docs/superpowers/specs/2026-08-28-agent-chat-interrupt-design.md).
+# _active_handles: which tasks have a live adapter session in THIS process
+# right now — populated only by _execute_task, for the duration of its own
+# execution. Lets POST /api/tasks/{id}/message know whether there's a live
+# turn to interrupt.
+_active_handles: dict[str, SessionHandle] = {}
+# _pending_messages: messages the user has sent that _execute_task's loop
+# hasn't consumed yet, one queue per task.
+_pending_messages: dict[str, asyncio.Queue[str]] = {}
 
 
 @asynccontextmanager
@@ -181,6 +192,9 @@ async def _execute_task(task_id: str) -> None:
     with get_session() as session:
         task = session.get(MissionTask, task_id)
         runtime = RuntimeType(task.runtime)
+        prompt = task.prompt
+        native_session_id = task.native_session_id
+        mission_id = task.mission_id
 
     adapter = get_adapter(runtime)
     spec = load_pinned_spec(runtime)
@@ -207,60 +221,86 @@ async def _execute_task(task_id: str) -> None:
 
     with get_session() as session:
         task = session.get(MissionTask, task_id)
-        handle = await adapter.start(SessionRequest(mission_id=task.mission_id, task_id=task_id, workspace=workspace))
+        handle = await adapter.start(SessionRequest(
+            mission_id=mission_id, task_id=task_id, workspace=workspace,
+            resume_native_ref=native_session_id,
+        ))
         task.session_id = handle.session_id
         task.status = TaskStatus.RUNNING
         session.add(task)
         session.add(TaskEvent(task_id=task_id, event_type="status_changed", payload_json=json.dumps({"status": "running"})))
         session.commit()
-        prompt = task.prompt
 
+    _active_handles[task_id] = handle
     try:
-        ack = await adapter.send_task(handle, Task(id=task_id, mission_id=task.mission_id, instructions=prompt))
-    except NotImplementedError as exc:
-        _finish(task_id, TaskStatus.UNSUPPORTED, error_detail=str(exc))
-        await adapter.destroy(handle)
-        return
+        while True:
+            pending = _pending_messages.get(task_id)
+            if pending is not None and not pending.empty():
+                prompt = await pending.get()
+                _record_user_message_event(task_id, prompt)
 
-    if not ack.accepted:
-        _finish(task_id, TaskStatus.FAILED, error_detail=ack.reason or "task rejected")
-        await adapter.destroy(handle)
-        return
+            try:
+                ack = await adapter.send_task(handle, Task(id=task_id, mission_id=mission_id, instructions=prompt))
+            except NotImplementedError as exc:
+                _finish(task_id, TaskStatus.UNSUPPORTED, error_detail=str(exc))
+                return
 
-    saw_error = False
-    captured_result_text: str | None = None
-    async for event in adapter.stream_events(handle):
-        if event.error_family is not None:
-            saw_error = True
-        extracted = extract_claude_code_result_text(event.event_type, event.payload)
-        if extracted is not None:
-            captured_result_text = extracted
-        with get_session() as session:
-            session.add(
-                TaskEvent(
-                    task_id=task_id,
-                    event_type=event.event_type,
-                    payload_json=json.dumps(event.payload),
-                    error_family=event.error_family.value if event.error_family else None,
-                )
+            if not ack.accepted:
+                _finish(task_id, TaskStatus.FAILED, error_detail=ack.reason or "task rejected")
+                return
+
+            saw_error = False
+            captured_result_text: str | None = None
+            captured_native_ref: str | None = None
+            async for event in adapter.stream_events(handle):
+                if event.error_family is not None:
+                    saw_error = True
+                extracted = extract_claude_code_result_text(event.event_type, event.payload)
+                if extracted is not None:
+                    captured_result_text = extracted
+                if event.native_ref is not None:
+                    captured_native_ref = event.native_ref
+                with get_session() as session:
+                    session.add(
+                        TaskEvent(
+                            task_id=task_id,
+                            event_type=event.event_type,
+                            payload_json=json.dumps(event.payload),
+                            error_family=event.error_family.value if event.error_family else None,
+                        )
+                    )
+                    task = session.get(MissionTask, task_id)
+                    if event.cost is not None:
+                        task.total_cost_usd += event.cost.cost_usd
+                        task.total_input_tokens += event.cost.input_tokens
+                        task.total_output_tokens += event.cost.output_tokens
+                    if captured_native_ref is not None:
+                        task.native_session_id = captured_native_ref
+                    session.add(task)
+                    session.commit()
+
+            pending = _pending_messages.get(task_id)
+            if pending is not None and not pending.empty():
+                continue  # top-of-loop check above picks up the message
+
+            health = await adapter.health(handle)
+            final_status = TaskStatus.SUCCEEDED if health.status == HealthStatus.HEALTHY and not saw_error else TaskStatus.FAILED
+            _finish(
+                task_id,
+                final_status,
+                error_detail=None if final_status == TaskStatus.SUCCEEDED else health.detail,
+                result_text=captured_result_text if final_status == TaskStatus.SUCCEEDED else None,
             )
-            task = session.get(MissionTask, task_id)
-            if event.cost is not None:
-                task.total_cost_usd += event.cost.cost_usd
-                task.total_input_tokens += event.cost.input_tokens
-                task.total_output_tokens += event.cost.output_tokens
-                session.add(task)
-            session.commit()
+            return
+    finally:
+        _active_handles.pop(task_id, None)
+        await adapter.destroy(handle)
 
-    health = await adapter.health(handle)
-    final_status = TaskStatus.SUCCEEDED if health.status == HealthStatus.HEALTHY and not saw_error else TaskStatus.FAILED
-    _finish(
-        task_id,
-        final_status,
-        error_detail=None if final_status == TaskStatus.SUCCEEDED else health.detail,
-        result_text=captured_result_text if final_status == TaskStatus.SUCCEEDED else None,
-    )
-    await adapter.destroy(handle)
+
+def _record_user_message_event(task_id: str, text: str) -> None:
+    with get_session() as session:
+        session.add(TaskEvent(task_id=task_id, event_type="user_message", payload_json=json.dumps({"text": text})))
+        session.commit()
 
 
 def _finish(task_id: str, status: TaskStatus, error_detail: str | None = None, result_text: str | None = None) -> None:
