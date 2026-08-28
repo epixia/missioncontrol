@@ -30,6 +30,7 @@ from mission_control.adapters.types import (
 )
 from mission_control.server.db import get_session, init_db
 from mission_control.server.models import Mission, MissionTask, TaskEvent, TaskStatus
+from mission_control.server.pipeline_prompts import extract_claude_code_result_text
 from mission_control.server.runtime_registry import get_adapter, load_pinned_spec
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -209,9 +210,13 @@ async def _execute_task(task_id: str) -> None:
         return
 
     saw_error = False
+    captured_result_text: str | None = None
     async for event in adapter.stream_events(handle):
         if event.error_family is not None:
             saw_error = True
+        extracted = extract_claude_code_result_text(event.event_type, event.payload)
+        if extracted is not None:
+            captured_result_text = extracted
         with get_session() as session:
             session.add(
                 TaskEvent(
@@ -231,17 +236,23 @@ async def _execute_task(task_id: str) -> None:
 
     health = await adapter.health(handle)
     final_status = TaskStatus.SUCCEEDED if health.status == HealthStatus.HEALTHY and not saw_error else TaskStatus.FAILED
-    _finish(task_id, final_status, error_detail=None if final_status == TaskStatus.SUCCEEDED else health.detail)
+    _finish(
+        task_id,
+        final_status,
+        error_detail=None if final_status == TaskStatus.SUCCEEDED else health.detail,
+        result_text=captured_result_text if final_status == TaskStatus.SUCCEEDED else None,
+    )
     await adapter.destroy(handle)
 
 
-def _finish(task_id: str, status: TaskStatus, error_detail: str | None) -> None:
+def _finish(task_id: str, status: TaskStatus, error_detail: str | None = None, result_text: str | None = None) -> None:
     with get_session() as session:
         task = session.get(MissionTask, task_id)
         if task is None:
             return
         task.status = status
         task.error_detail = error_detail
+        task.result_text = result_text
         session.add(task)
         session.add(
             TaskEvent(
