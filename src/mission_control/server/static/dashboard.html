@@ -69,6 +69,13 @@
   .task-item .prompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .task-item .meta { color: var(--dim); font-size: 0.85em; }
 
+  .agent-tab { background: transparent; color: var(--dim); border: 1px solid var(--border);
+               border-radius: 3px; padding: 0.25rem 0.6rem; cursor: pointer; font-weight: normal; }
+  .agent-tab.selected { border-color: var(--accent); color: var(--white); }
+  .agent-tab:hover { border-color: var(--border-lit); }
+  .comm-line { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
+  .comm-line b { color: var(--white); font-weight: normal; }
+
   #logList { display: flex; flex-direction: column; gap: 0.15rem; max-height: 220px; overflow-y: auto;
              font-size: 0.85em; margin-top: 0.7rem; }
   #logList .row { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -155,6 +162,18 @@
     <input type="text" name="workspace_path" placeholder="Workspace path" value="." required />
     <button type="submit">Run task</button>
   </form>
+
+  <form class="inline" id="pipelineForm">
+    <input type="text" name="goal" placeholder="Pipeline goal (Orchestrator -> Coder -> Reviewer)" required />
+    <input type="text" name="workspace_path" placeholder="Workspace path" value="." required />
+    <button type="submit">Run agent pipeline</button>
+  </form>
+
+  <div class="panel" id="pipelinesPanel" style="margin-bottom:0.6rem;">
+    <h2>Agents <span class="count" id="pipelinesCount"></span></h2>
+    <div id="pipelineRuns"><span class="t-empty">no pipeline runs yet</span></div>
+    <div id="commFeed" style="margin-top:0.6rem;"></div>
+  </div>
 
   <div id="detailGrid">
     <div class="panel">
@@ -281,6 +300,54 @@ document.getElementById("taskForm").addEventListener("submit", async (e) => {
   selectTask(task.id);
 });
 
+document.getElementById("pipelineForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  await fetchJSON(`/api/missions/${state.currentMissionId}/pipeline`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(fd)),
+  });
+  e.target.querySelector('[name=goal]').value = "";
+  await loadPipelines();
+});
+
+async function loadPipelines() {
+  if (!state.currentMissionId) return;
+  const runs = await fetchJSON(`/api/missions/${state.currentMissionId}/pipelines`);
+  document.getElementById("pipelinesCount").textContent = runs.length;
+  const container = document.getElementById("pipelineRuns");
+  const feed = document.getElementById("commFeed");
+  container.innerHTML = runs.length ? "" : '<span class="t-empty">no pipeline runs yet</span>';
+  feed.innerHTML = "";
+
+  const icons = { succeeded: "✓", failed: "✗", running: "●", pending: "○", unsupported: "–" };
+
+  for (const run of runs) {
+    const tabs = document.createElement("div");
+    tabs.style.display = "flex";
+    tabs.style.gap = "0.4rem";
+    tabs.style.marginBottom = "0.4rem";
+    for (const task of run.tasks) {
+      const tab = document.createElement("button");
+      tab.className = "agent-tab" + (task.id === state.currentTaskId ? " selected" : "");
+      tab.textContent = `${icons[task.status] || "?"} ${task.role}`;
+      tab.addEventListener("click", () => selectTask(task.id));
+      tabs.appendChild(tab);
+    }
+    container.appendChild(tabs);
+
+    for (let i = 0; i < run.tasks.length; i++) {
+      const from = run.tasks[i];
+      const to = run.tasks[i + 1] ? run.tasks[i + 1].role : "done";
+      const working = from.status === "running" || from.status === "pending";
+      const text = (from.result_text || (working ? "…working…" : from.error_detail || "")).slice(0, 160);
+      const line = document.createElement("div");
+      line.className = "comm-line";
+      line.innerHTML = `<b>${from.role} → ${to}:</b> ${escapeHtml(text)}`;
+      feed.appendChild(line);
+    }
+  }
+}
+
 async function refreshDetail() {
   const missionId = state.currentMissionId;
   const missions = await fetchJSON("/api/missions");
@@ -334,6 +401,7 @@ async function refreshDetail() {
   }
 
   window._detailTasks = tasks;
+  await loadPipelines();
 }
 
 function renderActiveTaskMeta(task) {
