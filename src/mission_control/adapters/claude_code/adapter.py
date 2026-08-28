@@ -92,6 +92,7 @@ class ClaudeCodeRuntimeAdapter(RuntimeAdapter):
 
     async def start(self, session: SessionRequest) -> SessionHandle:
         state = _SessionState(session.workspace, self._pending_settings_path)
+        state.native_ref = session.resume_native_ref
         session_id = str(uuid.uuid4())
         self._sessions[session_id] = state
         return SessionHandle(
@@ -174,6 +175,7 @@ class ClaudeCodeRuntimeAdapter(RuntimeAdapter):
                     timestamp=datetime.now(UTC),
                     payload=payload,
                     cost=self._extract_cost(payload),
+                    native_ref=state.native_ref,
                 )
             )
         await state.process.wait()  # reap the process so .returncode is set for health()

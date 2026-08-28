@@ -165,3 +165,94 @@ async def test_claude_code_send_task_passes_prompt_via_stdin():
 
     # Clean up
     await adapter.destroy(handle)
+
+
+async def test_claude_code_start_with_resume_native_ref_causes_resume_flag():
+    """A task reopened after finishing (or after a server restart) has no
+    live adapter session, but the DB remembers Claude's own session id.
+    start() must seed that into the new session so the *next* send_task
+    call passes --resume, without needing any turn to have run first."""
+    from datetime import UTC, datetime
+
+    adapter = ClaudeCodeRuntimeAdapter()
+    workspace = Workspace(path=Path("/tmp/test"))
+
+    handle = await adapter.start(SessionRequest(
+        mission_id="m1", task_id="t1", workspace=workspace,
+        resume_native_ref="claude-native-existing-session",
+    ))
+
+    captured_args = None
+
+    async def mock_create_subprocess(*args, **kwargs):
+        nonlocal captured_args
+        captured_args = args
+        mock_process = AsyncMock()
+        mock_stdin = Mock()
+        mock_stdin.write = Mock(return_value=None)
+        mock_stdin.drain = AsyncMock()
+        mock_stdin.close = Mock()
+        mock_process.stdin = mock_stdin
+        mock_process.stdout = AsyncMock()
+        mock_process.returncode = 0
+
+        async def empty_stream():
+            return
+            yield
+        mock_process.stdout.__aiter__ = Mock(return_value=empty_stream())
+        mock_process.wait = AsyncMock()
+        return mock_process
+
+    with patch("mission_control.adapters.claude_code.adapter.create_subprocess", side_effect=mock_create_subprocess):
+        await adapter.send_task(handle, Task(id="t1", mission_id="m1", instructions="continue please"))
+
+    args_str = " ".join(captured_args)
+    assert "--resume" in args_str
+    assert "claude-native-existing-session" in args_str
+
+    await adapter.destroy(handle)
+
+
+async def test_claude_code_pump_events_attaches_native_ref():
+    """Once a stream-json line reveals Claude's session_id, every
+    subsequently-emitted RuntimeEvent must carry it as native_ref — this is
+    what lets _execute_task persist a durable, resumable session id."""
+    from datetime import UTC, datetime
+
+    adapter = ClaudeCodeRuntimeAdapter()
+    workspace = Workspace(path=Path("/tmp/test"))
+    handle = await adapter.start(SessionRequest(mission_id="m1", task_id="t1", workspace=workspace))
+
+    lines = [
+        b'{"type":"system","subtype":"init","session_id":"claude-native-xyz"}\n',
+        b'{"type":"result","result":"OK","session_id":"claude-native-xyz","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}\n',
+    ]
+
+    async def mock_create_subprocess(*args, **kwargs):
+        mock_process = AsyncMock()
+        mock_stdin = Mock()
+        mock_stdin.write = Mock(return_value=None)
+        mock_stdin.drain = AsyncMock()
+        mock_stdin.close = Mock()
+        mock_process.stdin = mock_stdin
+
+        async def line_stream():
+            for line in lines:
+                yield line
+        mock_process.stdout = AsyncMock()
+        mock_process.stdout.__aiter__ = Mock(return_value=line_stream())
+        mock_process.wait = AsyncMock()
+        mock_process.returncode = 0
+        return mock_process
+
+    with patch("mission_control.adapters.claude_code.adapter.create_subprocess", side_effect=mock_create_subprocess):
+        await adapter.send_task(handle, Task(id="t1", mission_id="m1", instructions="hi"))
+        events = []
+        async for event in adapter.stream_events(handle):
+            events.append(event)
+
+    assert len(events) == 2
+    assert events[0].native_ref == "claude-native-xyz"
+    assert events[1].native_ref == "claude-native-xyz"
+
+    await adapter.destroy(handle)
