@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -104,7 +105,25 @@ class ClaudeCodeRuntimeAdapter(RuntimeAdapter):
     async def stop(self, handle: SessionHandle) -> None:
         state = self._require(handle)
         if state.process is not None and state.process.returncode is None:
-            state.process.terminate()
+            if sys.platform == "win32":
+                # `create_subprocess` wraps every launch with `cmd /c` on
+                # Windows, so `state.process` is the cmd.exe wrapper, not the
+                # real claude.exe. Terminating cmd.exe alone orphans claude.exe
+                # (Windows does not propagate termination to children) — the
+                # orphan keeps running (still with acceptEdits!) and keeps the
+                # stdout pipe open, which hangs adapter.stop()/_pump_events
+                # waiting for EOF that never comes. `taskkill /T /F` kills the
+                # whole process tree rooted at this PID; it finds descendants
+                # via their ParentProcessId even if this specific PID has
+                # already exited, so it's correct to call unconditionally here.
+                kill_proc = await asyncio.create_subprocess_exec(
+                    "taskkill", "/T", "/F", "/PID", str(state.process.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await kill_proc.wait()
+            else:
+                state.process.terminate()
             await state.process.wait()
 
     async def restart(self, handle: SessionHandle) -> SessionHandle:

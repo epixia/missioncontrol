@@ -6,6 +6,7 @@ at collection time (ABC instantiation), before any runtime-specific test runs.
 """
 
 import asyncio
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -256,3 +257,52 @@ async def test_claude_code_pump_events_attaches_native_ref():
     assert events[1].native_ref == "claude-native-xyz"
 
     await adapter.destroy(handle)
+
+
+async def test_claude_code_stop_on_windows_kills_process_tree_via_taskkill():
+    """On Windows, `create_subprocess` wraps every claude.exe launch with
+    `cmd /c` (see _proc.py's docstring), so `state.process` is the cmd.exe
+    wrapper, not the real claude.exe. Terminating just cmd.exe orphans
+    claude.exe (Windows does not propagate termination to children) — the
+    orphan keeps running (still with --permission-mode acceptEdits!) and
+    keeps the stdout pipe open, which hangs stop()/_pump_events forever
+    waiting for an EOF that never comes.
+
+    The fix calls `taskkill /T /F /PID <pid>` on Windows, which kills the
+    whole process tree rooted at that PID (found via current
+    ParentProcessId, so it works even if cmd.exe already exited). This test
+    verifies stop() invokes taskkill with exactly those arguments when
+    sys.platform is win32 — patched directly so the test runs the same
+    regardless of the host OS.
+    """
+    adapter = ClaudeCodeRuntimeAdapter()
+    workspace = Workspace(path=Path("/tmp/test"))
+    handle = await adapter.start(SessionRequest(mission_id="m1", task_id="t1", workspace=workspace))
+
+    state = adapter._sessions[handle.session_id]
+    mock_process = Mock()
+    mock_process.pid = 4242
+    mock_process.returncode = None
+    mock_process.wait = AsyncMock()
+    state.process = mock_process
+
+    mock_kill_proc = Mock()
+    mock_kill_proc.wait = AsyncMock()
+
+    captured_args = None
+
+    async def mock_create_subprocess_exec(*args, **kwargs):
+        nonlocal captured_args
+        captured_args = args
+        return mock_kill_proc
+
+    with (
+        patch("sys.platform", "win32"),
+        patch("asyncio.create_subprocess_exec", side_effect=mock_create_subprocess_exec),
+    ):
+        await adapter.stop(handle)
+
+    assert captured_args == ("taskkill", "/T", "/F", "/PID", "4242")
+    mock_kill_proc.wait.assert_awaited_once()
+    mock_process.wait.assert_awaited_once()
+    mock_process.terminate.assert_not_called()
