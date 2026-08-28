@@ -126,3 +126,28 @@ async def test_execute_task_registers_and_deregisters_active_handle(isolated_db,
         "the handle must be deregistered once the task finishes — otherwise "
         "a later message to this task would wrongly think a turn is still live"
     )
+
+
+async def test_execute_task_marks_failed_on_unexpected_exception(isolated_db, monkeypatch):
+    """If anything inside _execute_task raises unexpectedly (e.g. an adapter
+    bug in configure/deploy/start, or mid-stream), the task's row must end
+    up FAILED with the exception's repr() recorded — not left RUNNING
+    forever with no error surfaced anywhere. Without this boundary, the
+    task would also become permanently unmessageable, since the message
+    route only restarts a task in a terminal status."""
+
+    class _FakeAdapterThatBlowsUpOnConfigure(_FakeAdapter):
+        async def configure(self, config):
+            raise RuntimeError("boom")
+
+    fake = _FakeAdapterThatBlowsUpOnConfigure()
+    monkeypatch.setattr(app_module, "get_adapter", lambda runtime: fake)
+    task_id = _new_mission_and_task()
+
+    await app_module._execute_task(task_id)
+
+    with app_module.get_session() as session:
+        task = session.get(MissionTask, task_id)
+        assert task.status == TaskStatus.FAILED
+        assert "boom" in task.error_detail
+        assert "RuntimeError" in task.error_detail

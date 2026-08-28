@@ -220,8 +220,8 @@
   </div>
 
   <form class="inline" id="messageForm">
-    <input type="text" name="text" placeholder="Message this agent (works even after it finishes)" required />
-    <button type="submit">Send</button>
+    <input type="text" name="text" placeholder="Message this agent (works even after it finishes)" required disabled />
+    <button type="submit" disabled>Send</button>
   </form>
 
   <div id="footer">
@@ -362,10 +362,15 @@ document.getElementById("messageForm").addEventListener("submit", async (e) => {
   if (!state.currentTaskId) return;
   const fd = new FormData(e.target);
   const text = fd.get("text");
+  try {
+    await fetchJSON(`/api/tasks/${state.currentTaskId}/message`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+    });
+  } catch (err) {
+    appendLine(document.getElementById("transcript"), "t-error", `failed to send message: ${escapeHtml(err.message)}`);
+    return;
+  }
   e.target.reset();
-  await fetchJSON(`/api/tasks/${state.currentTaskId}/message`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
-  });
   watchTranscript(state.currentTaskId);  // re-open the SSE connection — it may have closed on a prior "done"
 });
 
@@ -488,11 +493,12 @@ function renderActiveTaskMeta(task) {
     <div class="prompt-block">${mdBold(task.prompt)}</div>
   `;
   document.getElementById("transcriptSub").textContent = task.runtime;
+  document.querySelector('#messageForm input[name=text]').disabled = task.runtime !== "claude_code";
+  document.querySelector('#messageForm button[type=submit]').disabled = task.runtime !== "claude_code";
 }
 
 function selectTask(taskId) {
   state.currentTaskId = taskId;
-  if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
   const tasks = window._detailTasks || [];
   const task = tasks.find(t => t.id === taskId);
   if (task) renderActiveTaskMeta(task);
@@ -501,6 +507,7 @@ function selectTask(taskId) {
 }
 
 function watchTranscript(taskId) {
+  if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
   const box = document.getElementById("transcript");
   box.innerHTML = "";
   const task = (window._detailTasks || []).find(t => t.id === taskId);
