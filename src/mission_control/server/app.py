@@ -60,6 +60,8 @@ app = FastAPI(title="Mission Control", lifespan=_lifespan)
 
 class CreateMissionRequest(BaseModel):
     name: str
+    goal: str | None = None
+    workspace_path: str | None = None
 
 
 class CreateTaskRequest(BaseModel):
@@ -90,13 +92,17 @@ def platform_health() -> dict:
 
 
 @app.post("/api/missions", response_model=Mission)
-def create_mission(req: CreateMissionRequest) -> Mission:
+async def create_mission(req: CreateMissionRequest) -> Mission:
     with get_session() as session:
         mission = Mission(name=req.name)
         session.add(mission)
         session.commit()
         session.refresh(mission)
-        return mission
+
+    if req.goal:
+        _start_pipeline(mission.id, req.goal, req.workspace_path or ".")
+
+    return mission
 
 
 @app.get("/api/missions")
@@ -280,19 +286,19 @@ def _finish(task_id: str, status: TaskStatus, error_detail: str | None = None, r
 def mission_log(mission_id: str) -> list[dict]:
     with get_session() as session:
         tasks = session.exec(select(MissionTask).where(MissionTask.mission_id == mission_id)).all()
-        task_runtime = {t.id: t.runtime for t in tasks}
-        if not task_runtime:
+        task_meta = {t.id: {"runtime": t.runtime, "role": t.role.value if t.role else None} for t in tasks}
+        if not task_meta:
             return []
         events = session.exec(
             select(TaskEvent)
-            .where(TaskEvent.task_id.in_(task_runtime.keys()), TaskEvent.event_type == "status_changed")
+            .where(TaskEvent.task_id.in_(task_meta.keys()), TaskEvent.event_type == "status_changed")
             .order_by(TaskEvent.timestamp.desc())
             .limit(200)
         ).all()
         return [
             {
                 "task_id": e.task_id,
-                "runtime": task_runtime.get(e.task_id, "?"),
+                **task_meta.get(e.task_id, {"runtime": "?", "role": None}),
                 "timestamp": e.timestamp.isoformat(),
                 **json.loads(e.payload_json),
             }
@@ -305,6 +311,24 @@ class RunPipelineRequest(BaseModel):
     workspace_path: str
 
 
+def _start_pipeline(mission_id: str, goal: str, workspace_path: str) -> tuple[str, str]:
+    """Create the Orchestrator task and kick off the pipeline in the
+    background. Returns (pipeline_run_id, orchestrator_task_id). Shared by
+    the explicit `POST .../pipeline` route and mission creation's optional
+    auto-start (`CreateMissionRequest.goal`)."""
+    pipeline_run_id = str(uuid.uuid4())
+    orchestrator_task_id = _create_pipeline_task(
+        mission_id, pipeline_run_id, AgentRole.ORCHESTRATOR,
+        build_orchestrator_prompt(goal), workspace_path,
+    )
+    task = asyncio.create_task(
+        _execute_pipeline(pipeline_run_id, mission_id, goal, workspace_path, orchestrator_task_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return pipeline_run_id, orchestrator_task_id
+
+
 @app.post("/api/missions/{mission_id}/pipeline")
 async def run_pipeline(mission_id: str, req: RunPipelineRequest) -> dict:
     with get_session() as session:
@@ -312,16 +336,7 @@ async def run_pipeline(mission_id: str, req: RunPipelineRequest) -> dict:
         if mission is None:
             raise HTTPException(404, "mission not found")
 
-    pipeline_run_id = str(uuid.uuid4())
-    orchestrator_task_id = _create_pipeline_task(
-        mission_id, pipeline_run_id, AgentRole.ORCHESTRATOR,
-        build_orchestrator_prompt(req.goal), req.workspace_path,
-    )
-    task = asyncio.create_task(
-        _execute_pipeline(pipeline_run_id, mission_id, req.goal, req.workspace_path, orchestrator_task_id)
-    )
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    pipeline_run_id, orchestrator_task_id = _start_pipeline(mission_id, req.goal, req.workspace_path)
 
     with get_session() as session:
         orchestrator_task = session.get(MissionTask, orchestrator_task_id)

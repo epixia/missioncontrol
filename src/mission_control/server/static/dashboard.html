@@ -69,10 +69,29 @@
   .task-item .prompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .task-item .meta { color: var(--dim); font-size: 0.85em; }
 
-  .agent-tab { background: transparent; color: var(--dim); border: 1px solid var(--border);
-               border-radius: 3px; padding: 0.25rem 0.6rem; cursor: pointer; font-weight: normal; }
-  .agent-tab.selected { border-color: var(--accent); color: var(--white); }
-  .agent-tab:hover { border-color: var(--border-lit); }
+  .pipeline-run { border: 1px solid var(--border); border-radius: 4px; padding: 0.6rem 0.7rem; margin-bottom: 0.6rem; }
+  .pipeline-run:last-child { margin-bottom: 0; }
+  .pipeline-run-header { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.55rem; font-size: 0.85em; }
+  .pipeline-run-header .goal { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pipeline-run-header .run-status { text-transform: uppercase; font-size: 0.85em; letter-spacing: 0.04em; }
+  .pipeline-run-header .run-status.succeeded { color: var(--green); }
+  .pipeline-run-header .run-status.failed { color: var(--red); }
+  .pipeline-run-header .run-status.running { color: var(--accent); }
+  .pipeline-run-header .when { color: var(--dimmer); }
+
+  .agent-tabs { display: flex; gap: 0.45rem; margin-bottom: 0.55rem; }
+  .agent-tab { background: var(--panel); color: var(--dim); border: 1px solid var(--border);
+               border-radius: 5px; padding: 0.5rem 1rem; cursor: pointer; font-weight: normal;
+               font-size: 1em; display: flex; align-items: center; gap: 0.45rem; }
+  .agent-tab .role-name { text-transform: capitalize; }
+  .agent-tab.selected { border-color: var(--accent); background: var(--accent); color: #1a0e04; font-weight: bold; }
+  .agent-tab.selected .icon { color: #1a0e04; }
+  .agent-tab:hover:not(.selected) { border-color: var(--border-lit); background: #17171b; }
+  .agent-tab .icon.succeeded { color: var(--green); }
+  .agent-tab .icon.failed { color: var(--red); }
+  .agent-tab .icon.running { color: var(--accent); }
+  .agent-tab .icon.pending, .agent-tab .icon.unsupported { color: var(--dimmer); }
+
   .comm-line { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
   .comm-line b { color: var(--white); font-weight: normal; }
 
@@ -132,6 +151,8 @@
     <h2>New Mission</h2>
     <form class="inline" id="missionForm">
       <input type="text" id="missionName" placeholder="Mission name" required />
+      <input type="text" id="missionGoal" placeholder="Goal (optional — auto-starts the agent pipeline)" />
+      <input type="text" id="missionWorkspace" placeholder="Workspace path" value="." />
       <button type="submit">Create</button>
     </form>
   </div>
@@ -172,7 +193,6 @@
   <div class="panel" id="pipelinesPanel" style="margin-bottom:0.6rem;">
     <h2>Agents <span class="count" id="pipelinesCount"></span></h2>
     <div id="pipelineRuns"><span class="t-empty">no pipeline runs yet</span></div>
-    <div id="commFeed" style="margin-top:0.6rem;"></div>
   </div>
 
   <div id="detailGrid">
@@ -231,6 +251,22 @@ function stripAnsi(s) {
   return String(s).replace(/\x1b\[[0-9;]*m/g, "").replace(/\[[0-9;]+m/g, "");
 }
 
+// Agent output (plans, reports, reviews) is markdown from Claude, and showing
+// literal "**text**" reads as broken. Escape first for safety, then render
+// only **bold** — a full markdown renderer would be overkill here.
+function mdBold(s) {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+}
+
+// The pipeline's persona prompts always end with "Goal:\n<goal text>" — pull
+// just the goal back out for a readable run header instead of showing the
+// whole persona preamble.
+function extractGoal(orchestratorTask) {
+  const marker = "Goal:\n";
+  const idx = orchestratorTask.prompt.indexOf(marker);
+  return idx >= 0 ? orchestratorTask.prompt.slice(idx + marker.length) : orchestratorTask.prompt;
+}
+
 // ---------- Missions list view ----------
 
 async function loadMissions() {
@@ -259,10 +295,14 @@ async function loadMissions() {
 document.getElementById("missionForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const name = document.getElementById("missionName").value;
+  const goal = document.getElementById("missionGoal").value;
+  const workspace_path = document.getElementById("missionWorkspace").value || ".";
+  const body = goal ? { name, goal, workspace_path } : { name };
   const mission = await fetchJSON("/api/missions", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   document.getElementById("missionName").value = "";
+  document.getElementById("missionGoal").value = "";
   await loadMissions();
   openMission(mission.id);
 });
@@ -315,25 +355,32 @@ async function loadPipelines() {
   const runs = await fetchJSON(`/api/missions/${state.currentMissionId}/pipelines`);
   document.getElementById("pipelinesCount").textContent = runs.length;
   const container = document.getElementById("pipelineRuns");
-  const feed = document.getElementById("commFeed");
   container.innerHTML = runs.length ? "" : '<span class="t-empty">no pipeline runs yet</span>';
-  feed.innerHTML = "";
 
   const icons = { succeeded: "✓", failed: "✗", running: "●", pending: "○", unsupported: "–" };
 
   for (const run of runs) {
+    const runDiv = document.createElement("div");
+    runDiv.className = "pipeline-run";
+
+    const header = document.createElement("div");
+    header.className = "pipeline-run-header";
+    header.innerHTML = `<span class="goal">${escapeHtml(extractGoal(run.tasks[0]))}</span>
+      <span class="run-status ${run.status}">${run.status}</span>
+      <span class="when">${timeAgo(run.tasks[0].created_at)}</span>`;
+    runDiv.appendChild(header);
+
     const tabs = document.createElement("div");
-    tabs.style.display = "flex";
-    tabs.style.gap = "0.4rem";
-    tabs.style.marginBottom = "0.4rem";
+    tabs.className = "agent-tabs";
     for (const task of run.tasks) {
       const tab = document.createElement("button");
+      tab.type = "button";
       tab.className = "agent-tab" + (task.id === state.currentTaskId ? " selected" : "");
-      tab.textContent = `${icons[task.status] || "?"} ${task.role}`;
+      tab.innerHTML = `<span class="icon ${task.status}">${icons[task.status] || "?"}</span><span class="role-name">${escapeHtml(task.role)}</span>`;
       tab.addEventListener("click", () => selectTask(task.id));
       tabs.appendChild(tab);
     }
-    container.appendChild(tabs);
+    runDiv.appendChild(tabs);
 
     for (let i = 0; i < run.tasks.length; i++) {
       const from = run.tasks[i];
@@ -342,9 +389,11 @@ async function loadPipelines() {
       const text = (from.result_text || (working ? "…working…" : from.error_detail || "")).slice(0, 160);
       const line = document.createElement("div");
       line.className = "comm-line";
-      line.innerHTML = `<b>${from.role} → ${to}:</b> ${escapeHtml(text)}`;
-      feed.appendChild(line);
+      line.innerHTML = `<b>${escapeHtml(from.role)} → ${escapeHtml(to)}:</b> ${mdBold(text)}`;
+      runDiv.appendChild(line);
     }
+
+    container.appendChild(runDiv);
   }
 }
 
@@ -370,11 +419,16 @@ async function refreshDetail() {
   document.getElementById("missionFrac").textContent = `${done}/${tasks.length}`;
   document.getElementById("progressFill").style.width = tasks.length ? `${(done/tasks.length)*100}%` : "0%";
 
-  document.getElementById("tasksCount").textContent = `${tasks.length}`;
+  // Pipeline-created tasks (role != null) already appear as agent tabs above —
+  // showing them here too was pure duplication (and their full persona prompts
+  // are much longer than an ad-hoc task's, dominating this panel). Only ad-hoc
+  // tasks belong in the flat list now.
+  const adHocTasks = tasks.filter(t => !t.pipeline_run_id);
+  document.getElementById("tasksCount").textContent = `${adHocTasks.length}`;
   const list = document.getElementById("taskList");
   list.innerHTML = "";
-  if (!tasks.length) list.innerHTML = '<span class="t-empty">no tasks yet</span>';
-  for (const t of tasks) {
+  if (!adHocTasks.length) list.innerHTML = '<span class="t-empty">no ad-hoc tasks yet</span>';
+  for (const t of adHocTasks) {
     const icons = { succeeded: "✓", failed: "✗", running: "●", pending: "○", unsupported: "–" };
     const row = document.createElement("div");
     row.className = "task-item" + (t.id === state.currentTaskId ? " selected" : "");
@@ -391,7 +445,8 @@ async function refreshDetail() {
   for (const entry of log) {
     const row = document.createElement("div");
     row.className = "row";
-    row.innerHTML = `<span class="ago">${timeAgo(entry.timestamp)}</span> <span class="st-${entry.status}">${entry.runtime}</span> → ${entry.status}`;
+    const label = entry.role || entry.runtime;
+    row.innerHTML = `<span class="ago">${timeAgo(entry.timestamp)}</span> <span class="st-${entry.status}">${escapeHtml(label)}</span> → ${entry.status}`;
     logList.appendChild(row);
   }
 
@@ -411,7 +466,7 @@ function renderActiveTaskMeta(task) {
     <div><b>workspace</b> ${escapeHtml(task.workspace_path)}</div>
     ${task.session_id ? `<div><b>session</b> ${task.session_id}</div>` : ""}
     ${task.error_detail ? `<div class="t-error" style="margin-top:0.4rem;">${escapeHtml(task.error_detail)}</div>` : ""}
-    <div class="prompt-block">${escapeHtml(task.prompt)}</div>
+    <div class="prompt-block">${mdBold(task.prompt)}</div>
   `;
   document.getElementById("transcriptSub").textContent = task.runtime;
 }
@@ -466,7 +521,7 @@ function appendClaudeCodeLine(box, eventType, payload) {
   if (["system", "stream_event", "rate_limit_event"].includes(eventType)) return; // noisy, redundant with 'assistant'/'result'
   if (eventType === "assistant") {
     for (const block of (payload.message?.content || [])) {
-      if (block.type === "text" && block.text.trim()) appendLine(box, "t-thought", escapeHtml(block.text));
+      if (block.type === "text" && block.text.trim()) appendLine(box, "t-thought", mdBold(block.text));
       if (block.type === "tool_use") {
         const arg = block.input?.file_path || block.input?.command || block.input?.pattern || JSON.stringify(block.input).slice(0, 80);
         appendLine(box, "t-tool", `<span class="verb">${escapeHtml(block.name)}</span>${escapeHtml(arg)}`);
@@ -484,7 +539,7 @@ function appendClaudeCodeLine(box, eventType, payload) {
     return;
   }
   if (eventType === "result") {
-    appendLine(box, "t-final", `completed — ${escapeHtml(payload.result || "")} ($${(payload.total_cost_usd || 0).toFixed(4)})`);
+    appendLine(box, "t-final", `completed — ${mdBold(payload.result || "")} ($${(payload.total_cost_usd || 0).toFixed(4)})`);
   }
 }
 
@@ -495,7 +550,7 @@ function appendCodexLine(box, eventType, payload) {
   if (eventType === "turn.failed") return appendLine(box, "t-error", escapeHtml(payload.error?.message || "turn failed"));
   // Unconfirmed success-path shape (item.*/turn.completed) — fall back honestly rather than guess structure.
   const text = payload.message || payload.text || payload.item?.text;
-  if (text) return appendLine(box, "t-text", escapeHtml(text));
+  if (text) return appendLine(box, "t-text", mdBold(text));
   appendLine(box, "t-raw", escapeHtml(JSON.stringify(payload)).slice(0, 300));
 }
 
