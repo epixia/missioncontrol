@@ -55,5 +55,7 @@ def extract_claude_code_result_text(event_type: str, payload: dict[str, Any]) ->
     returns non-None, so the "last" one is also the only one."""
     if event_type != "result":
         return None
+    if payload.get("is_error"):
+        return None
     result = payload.get("result")
     return result if isinstance(result, str) and result else None

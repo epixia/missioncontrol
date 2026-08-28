@@ -5,7 +5,7 @@ section 4.3: `claude -p --output-format stream-json` for task execution,
 `--settings` for hooks/permissions, `--resume`/`--session-id` for session
 continuity. The npm package ships no public source, so nothing here may
 depend on anything beyond the documented CLI flags (verified live against
-`claude --help` on the installed 2.1.247 build) and the Agent SDK's wire
+`claude --help` on the installed 2.1.250 build) and the Agent SDK's wire
 format.
 """
 

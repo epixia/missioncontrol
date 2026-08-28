@@ -44,3 +44,12 @@ def test_extract_claude_code_result_text_handles_missing_field():
 
 def test_extract_claude_code_result_text_handles_empty_string():
     assert extract_claude_code_result_text("result", {"result": ""}) is None
+
+
+def test_extract_claude_code_result_text_treats_is_error_result_as_failure():
+    """An error_max_turns-style result can still carry a `result` string and
+    exit 0 — is_error: true must still mean 'no result_text', per the spec's
+    'on failure, result_text stays None'."""
+    assert extract_claude_code_result_text(
+        "result", {"type": "result", "is_error": True, "result": "Reached max turns"}
+    ) is None

@@ -42,6 +42,12 @@ from mission_control.server.runtime_registry import get_adapter, load_pinned_spe
 _STATIC_DIR = Path(__file__).parent / "static"
 _RUNTIME_STATE_ROOT = Path.home() / ".mission-control" / "runtimes"
 
+# Strong references to fire-and-forget background tasks (e.g. the pipeline
+# runner) so they aren't garbage-collected mid-execution — the event loop
+# only holds a weak reference to a Task, per the asyncio docs' documented
+# footgun. Discarded automatically once the task finishes.
+_background_tasks: set[asyncio.Task] = set()
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -311,9 +317,11 @@ async def run_pipeline(mission_id: str, req: RunPipelineRequest) -> dict:
         mission_id, pipeline_run_id, AgentRole.ORCHESTRATOR,
         build_orchestrator_prompt(req.goal), req.workspace_path,
     )
-    asyncio.create_task(
+    task = asyncio.create_task(
         _execute_pipeline(pipeline_run_id, mission_id, req.goal, req.workspace_path, orchestrator_task_id)
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     with get_session() as session:
         orchestrator_task = session.get(MissionTask, orchestrator_task_id)
@@ -346,25 +354,35 @@ def _create_pipeline_task(
 async def _execute_pipeline(
     pipeline_run_id: str, mission_id: str, goal: str, workspace_path: str, orchestrator_task_id: str
 ) -> None:
-    await _execute_task(orchestrator_task_id)
-    orchestrator = _get_task(orchestrator_task_id)
-    if orchestrator is None or orchestrator.status != TaskStatus.SUCCEEDED or not orchestrator.result_text:
-        return  # pipeline halts here; coder/reviewer tasks are never created
+    current_task_id = orchestrator_task_id
+    try:
+        await _execute_task(orchestrator_task_id)
+        orchestrator = _get_task(orchestrator_task_id)
+        if orchestrator is None or orchestrator.status != TaskStatus.SUCCEEDED or not orchestrator.result_text:
+            return  # pipeline halts here; coder/reviewer tasks are never created
 
-    coder_task_id = _create_pipeline_task(
-        mission_id, pipeline_run_id, AgentRole.CODER,
-        build_coder_prompt(goal, orchestrator.result_text), workspace_path,
-    )
-    await _execute_task(coder_task_id)
-    coder = _get_task(coder_task_id)
-    if coder is None or coder.status != TaskStatus.SUCCEEDED or not coder.result_text:
-        return
+        coder_task_id = _create_pipeline_task(
+            mission_id, pipeline_run_id, AgentRole.CODER,
+            build_coder_prompt(goal, orchestrator.result_text), workspace_path,
+        )
+        current_task_id = coder_task_id
+        await _execute_task(coder_task_id)
+        coder = _get_task(coder_task_id)
+        if coder is None or coder.status != TaskStatus.SUCCEEDED or not coder.result_text:
+            return
 
-    reviewer_task_id = _create_pipeline_task(
-        mission_id, pipeline_run_id, AgentRole.REVIEWER,
-        build_reviewer_prompt(goal, coder.result_text), workspace_path,
-    )
-    await _execute_task(reviewer_task_id)
+        reviewer_task_id = _create_pipeline_task(
+            mission_id, pipeline_run_id, AgentRole.REVIEWER,
+            build_reviewer_prompt(goal, coder.result_text), workspace_path,
+        )
+        current_task_id = reviewer_task_id
+        await _execute_task(reviewer_task_id)
+    except Exception as exc:
+        # Defensive boundary: without this, an unhandled exception from
+        # _execute_task/_get_task/_create_pipeline_task would escape into
+        # this fire-and-forget background task, leaving the in-flight
+        # stage's DB row RUNNING forever with no status_changed event.
+        _finish(current_task_id, TaskStatus.FAILED, error_detail=repr(exc))
 
 
 def _get_task(task_id: str) -> MissionTask | None:
@@ -392,12 +410,18 @@ def list_pipelines(mission_id: str) -> list[dict]:
     for run_id, run_tasks in runs.items():
         run_tasks.sort(key=lambda t: _ROLE_ORDER.get(t.role, 99))
         statuses = [t.status for t in run_tasks]
-        if any(s == TaskStatus.FAILED for s in statuses):
+        if any(s in (TaskStatus.FAILED, TaskStatus.UNSUPPORTED) for s in statuses):
             overall = "failed"
         elif any(s in (TaskStatus.PENDING, TaskStatus.RUNNING) for s in statuses):
             overall = "running"
         elif len(run_tasks) == 3 and statuses[-1] == TaskStatus.SUCCEEDED:
             overall = "succeeded"
+        elif len(run_tasks) < 3 and statuses[-1] == TaskStatus.SUCCEEDED and not run_tasks[-1].result_text:
+            # A stage SUCCEEDED but produced no result_text: per the halt
+            # condition in _execute_pipeline, that halts the pipeline for
+            # good (no later-stage task will ever be created), so this is
+            # a terminal failure, not "still running".
+            overall = "failed"
         else:
             overall = "running"
         out.append({"pipeline_run_id": run_id, "status": overall, "tasks": run_tasks})
