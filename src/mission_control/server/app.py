@@ -81,6 +81,10 @@ class CreateTaskRequest(BaseModel):
     workspace_path: str
 
 
+class SendMessageRequest(BaseModel):
+    text: str
+
+
 @app.get("/")
 def dashboard() -> FileResponse:
     return FileResponse(_STATIC_DIR / "dashboard.html")
@@ -165,6 +169,39 @@ def get_task(task_id: str) -> MissionTask:
 @app.get("/api/tasks/{task_id}/events")
 async def stream_task_events(task_id: str) -> StreamingResponse:
     return StreamingResponse(_sse_generator(task_id), media_type="text/event-stream")
+
+
+@app.post("/api/tasks/{task_id}/message")
+async def send_task_message(task_id: str, req: SendMessageRequest) -> dict:
+    with get_session() as session:
+        task = session.get(MissionTask, task_id)
+        if task is None:
+            raise HTTPException(404, "task not found")
+        if task.runtime != "claude_code":
+            raise HTTPException(400, f"messaging is only supported for claude_code tasks, not {task.runtime!r}")
+        current_status = task.status
+
+    _pending_messages.setdefault(task_id, asyncio.Queue()).put_nowait(req.text)
+
+    live_handle = _active_handles.get(task_id)
+    if current_status == TaskStatus.RUNNING and live_handle is not None:
+        adapter = get_adapter(RuntimeType(task.runtime))
+        await adapter.stop(live_handle)
+    elif current_status != TaskStatus.RUNNING:
+        with get_session() as session:
+            task = session.get(MissionTask, task_id)
+            task.status = TaskStatus.RUNNING
+            session.add(task)
+            session.commit()
+        bg = asyncio.create_task(_execute_task(task_id))
+        _background_tasks.add(bg)
+        bg.add_done_callback(_background_tasks.discard)
+    # else: current_status == RUNNING but live_handle is None — a data-race
+    # edge case (status flipped between the two reads above). The message
+    # is already queued; it'll be picked up whenever that invocation's loop
+    # next checks, rather than erroring here.
+
+    return {"accepted": True}
 
 
 async def _sse_generator(task_id: str) -> AsyncIterator[str]:
