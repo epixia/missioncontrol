@@ -42,3 +42,21 @@ def test_migrate_is_idempotent(tmp_path):
     with engine.connect() as conn:
         columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(missiontask)")}
     assert {"role", "pipeline_run_id", "result_text"} <= columns
+
+
+def test_migrate_adds_native_session_id_column(tmp_path):
+    from mission_control.server.db import _migrate_add_columns
+
+    db_path = tmp_path / "test3.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE missiontask (id TEXT PRIMARY KEY, role TEXT, pipeline_run_id TEXT, result_text TEXT)"
+        )
+        conn.commit()
+
+    _migrate_add_columns(engine)
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(missiontask)")}
+    assert "native_session_id" in columns

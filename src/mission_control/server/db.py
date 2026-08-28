@@ -9,7 +9,7 @@ _DB_PATH = Path.home() / ".mission-control" / "mission-control.db"
 _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 engine = create_engine(f"sqlite:///{_DB_PATH}", connect_args={"check_same_thread": False})
 
-_NEW_COLUMNS = (("role", "TEXT"), ("pipeline_run_id", "TEXT"), ("result_text", "TEXT"))
+_NEW_COLUMNS = (("role", "TEXT"), ("pipeline_run_id", "TEXT"), ("result_text", "TEXT"), ("native_session_id", "TEXT"))
 
 
 def init_db() -> None:

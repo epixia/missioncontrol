@@ -56,6 +56,7 @@ class MissionTask(SQLModel, table=True):
     role: AgentRole | None = Field(default=None)
     pipeline_run_id: str | None = Field(default=None, index=True)
     result_text: str | None = Field(default=None)
+    native_session_id: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 

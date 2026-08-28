@@ -114,6 +114,12 @@ class SessionRequest(BaseModel):
     """Optional hint passed through to the Model Gateway (e.g. 'qwen-local',
     'claude-sonnet-5'). Adapters never resolve this themselves."""
     extra: dict[str, Any] = Field(default_factory=dict)
+    resume_native_ref: str | None = None
+    """A previously-seen runtime-native session id (see `RuntimeEvent.native_ref`)
+    to resume, when starting a session for a task that has run before —
+    even in an earlier server process. Adapters that don't support
+    resuming from a bare native ref (i.e. everything but Claude Code today)
+    ignore this field."""
 
 
 class SessionHandle(BaseModel):
@@ -188,6 +194,11 @@ class RuntimeEvent(BaseModel):
     cost: CostEvent | None = None
     approval_request: ApprovalRequest | None = None
     error_family: ErrorFamily | None = None
+    native_ref: str | None = None
+    """The runtime-native session id this event belongs to, when the
+    adapter can determine it (e.g. Claude Code's `session_id` field on
+    stream-json events). Lets callers persist a durable, resumable session
+    reference without depending on adapter-internal state."""
 
 
 class LogLine(BaseModel):
