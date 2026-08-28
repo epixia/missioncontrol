@@ -121,6 +121,8 @@
   .t-error { color: var(--red); }
   .t-error::before { content: "✗ "; }
   .t-final { color: var(--green); border-top: 1px solid var(--border); margin-top: 0.4rem; padding-top: 0.4rem; }
+  .t-user { color: var(--blue); }
+  .t-user b { color: var(--white); font-weight: normal; }
   .t-raw { color: var(--dimmer); font-size: 0.88em; }
   .t-empty { color: var(--dimmer); }
 
@@ -216,6 +218,11 @@
     <h2>Active Worker <span class="count" id="transcriptSub"></span></h2>
     <div id="transcript"><div class="t-empty">no task selected</div></div>
   </div>
+
+  <form class="inline" id="messageForm">
+    <input type="text" name="text" placeholder="Message this agent (works even after it finishes)" required />
+    <button type="submit">Send</button>
+  </form>
 
   <div id="footer">
     <span><kbd>Tab</kbd> next task</span>
@@ -348,6 +355,18 @@ document.getElementById("pipelineForm").addEventListener("submit", async (e) => 
   });
   e.target.querySelector('[name=goal]').value = "";
   await loadPipelines();
+});
+
+document.getElementById("messageForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!state.currentTaskId) return;
+  const fd = new FormData(e.target);
+  const text = fd.get("text");
+  e.target.reset();
+  await fetchJSON(`/api/tasks/${state.currentTaskId}/message`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+  });
+  watchTranscript(state.currentTaskId);  // re-open the SSE connection — it may have closed on a prior "done"
 });
 
 async function loadPipelines() {
@@ -511,6 +530,7 @@ function appendLine(box, cls, html) {
 // lines — both get an honest, simpler line-per-event view instead of invented
 // structure.
 function appendTranscriptLine(box, runtime, eventType, payload) {
+  if (eventType === "user_message") return appendLine(box, "t-user", `<b>you:</b> ${escapeHtml(payload.text || "")}`);
   if (runtime === "claude_code") return appendClaudeCodeLine(box, eventType, payload);
   if (runtime === "codex") return appendCodexLine(box, eventType, payload);
   if (runtime === "hermes") return appendHermesLine(box, eventType, payload);
