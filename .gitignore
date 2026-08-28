@@ -13,3 +13,6 @@ wheels/
 *.db
 .server.pid
 .pytest_cache/
+
+# Claude Code harness state (worktree registry, scheduled-task locks)
+.claude/
