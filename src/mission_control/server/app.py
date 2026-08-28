@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,11 +30,23 @@ from mission_control.adapters.types import (
     Workspace,
 )
 from mission_control.server.db import get_session, init_db
-from mission_control.server.models import Mission, MissionTask, TaskEvent, TaskStatus
+from mission_control.server.models import AgentRole, Mission, MissionTask, TaskEvent, TaskStatus
+from mission_control.server.pipeline_prompts import (
+    build_coder_prompt,
+    build_orchestrator_prompt,
+    build_reviewer_prompt,
+    extract_claude_code_result_text,
+)
 from mission_control.server.runtime_registry import get_adapter, load_pinned_spec
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _RUNTIME_STATE_ROOT = Path.home() / ".mission-control" / "runtimes"
+
+# Strong references to fire-and-forget background tasks (e.g. the pipeline
+# runner) so they aren't garbage-collected mid-execution — the event loop
+# only holds a weak reference to a Task, per the asyncio docs' documented
+# footgun. Discarded automatically once the task finishes.
+_background_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
@@ -209,9 +222,13 @@ async def _execute_task(task_id: str) -> None:
         return
 
     saw_error = False
+    captured_result_text: str | None = None
     async for event in adapter.stream_events(handle):
         if event.error_family is not None:
             saw_error = True
+        extracted = extract_claude_code_result_text(event.event_type, event.payload)
+        if extracted is not None:
+            captured_result_text = extracted
         with get_session() as session:
             session.add(
                 TaskEvent(
@@ -231,17 +248,23 @@ async def _execute_task(task_id: str) -> None:
 
     health = await adapter.health(handle)
     final_status = TaskStatus.SUCCEEDED if health.status == HealthStatus.HEALTHY and not saw_error else TaskStatus.FAILED
-    _finish(task_id, final_status, error_detail=None if final_status == TaskStatus.SUCCEEDED else health.detail)
+    _finish(
+        task_id,
+        final_status,
+        error_detail=None if final_status == TaskStatus.SUCCEEDED else health.detail,
+        result_text=captured_result_text if final_status == TaskStatus.SUCCEEDED else None,
+    )
     await adapter.destroy(handle)
 
 
-def _finish(task_id: str, status: TaskStatus, error_detail: str | None) -> None:
+def _finish(task_id: str, status: TaskStatus, error_detail: str | None = None, result_text: str | None = None) -> None:
     with get_session() as session:
         task = session.get(MissionTask, task_id)
         if task is None:
             return
         task.status = status
         task.error_detail = error_detail
+        task.result_text = result_text
         session.add(task)
         session.add(
             TaskEvent(
@@ -275,3 +298,133 @@ def mission_log(mission_id: str) -> list[dict]:
             }
             for e in events
         ]
+
+
+class RunPipelineRequest(BaseModel):
+    goal: str
+    workspace_path: str
+
+
+@app.post("/api/missions/{mission_id}/pipeline")
+async def run_pipeline(mission_id: str, req: RunPipelineRequest) -> dict:
+    with get_session() as session:
+        mission = session.get(Mission, mission_id)
+        if mission is None:
+            raise HTTPException(404, "mission not found")
+
+    pipeline_run_id = str(uuid.uuid4())
+    orchestrator_task_id = _create_pipeline_task(
+        mission_id, pipeline_run_id, AgentRole.ORCHESTRATOR,
+        build_orchestrator_prompt(req.goal), req.workspace_path,
+    )
+    task = asyncio.create_task(
+        _execute_pipeline(pipeline_run_id, mission_id, req.goal, req.workspace_path, orchestrator_task_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    with get_session() as session:
+        orchestrator_task = session.get(MissionTask, orchestrator_task_id)
+        return {"pipeline_run_id": pipeline_run_id, "orchestrator_task": orchestrator_task}
+
+
+def _create_pipeline_task(
+    mission_id: str, pipeline_run_id: str, role: AgentRole, prompt: str, workspace_path: str
+) -> str:
+    with get_session() as session:
+        task = MissionTask(
+            mission_id=mission_id,
+            runtime="claude_code",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            role=role,
+            pipeline_run_id=pipeline_run_id,
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        task_id = task.id
+        session.add(
+            TaskEvent(task_id=task_id, event_type="status_changed", payload_json=json.dumps({"status": "pending"}))
+        )
+        session.commit()
+        return task_id
+
+
+async def _execute_pipeline(
+    pipeline_run_id: str, mission_id: str, goal: str, workspace_path: str, orchestrator_task_id: str
+) -> None:
+    current_task_id = orchestrator_task_id
+    try:
+        await _execute_task(orchestrator_task_id)
+        orchestrator = _get_task(orchestrator_task_id)
+        if orchestrator is None or orchestrator.status != TaskStatus.SUCCEEDED or not orchestrator.result_text:
+            return  # pipeline halts here; coder/reviewer tasks are never created
+
+        coder_task_id = _create_pipeline_task(
+            mission_id, pipeline_run_id, AgentRole.CODER,
+            build_coder_prompt(goal, orchestrator.result_text), workspace_path,
+        )
+        current_task_id = coder_task_id
+        await _execute_task(coder_task_id)
+        coder = _get_task(coder_task_id)
+        if coder is None or coder.status != TaskStatus.SUCCEEDED or not coder.result_text:
+            return
+
+        reviewer_task_id = _create_pipeline_task(
+            mission_id, pipeline_run_id, AgentRole.REVIEWER,
+            build_reviewer_prompt(goal, coder.result_text), workspace_path,
+        )
+        current_task_id = reviewer_task_id
+        await _execute_task(reviewer_task_id)
+    except Exception as exc:
+        # Defensive boundary: without this, an unhandled exception from
+        # _execute_task/_get_task/_create_pipeline_task would escape into
+        # this fire-and-forget background task, leaving the in-flight
+        # stage's DB row RUNNING forever with no status_changed event.
+        _finish(current_task_id, TaskStatus.FAILED, error_detail=repr(exc))
+
+
+def _get_task(task_id: str) -> MissionTask | None:
+    with get_session() as session:
+        return session.get(MissionTask, task_id)
+
+
+_ROLE_ORDER = {AgentRole.ORCHESTRATOR: 0, AgentRole.CODER: 1, AgentRole.REVIEWER: 2}
+
+
+@app.get("/api/missions/{mission_id}/pipelines")
+def list_pipelines(mission_id: str) -> list[dict]:
+    with get_session() as session:
+        tasks = session.exec(
+            select(MissionTask)
+            .where(MissionTask.mission_id == mission_id, MissionTask.pipeline_run_id.is_not(None))
+            .order_by(MissionTask.created_at)
+        ).all()
+
+    runs: dict[str, list[MissionTask]] = {}
+    for task in tasks:
+        runs.setdefault(task.pipeline_run_id, []).append(task)
+
+    out = []
+    for run_id, run_tasks in runs.items():
+        run_tasks.sort(key=lambda t: _ROLE_ORDER.get(t.role, 99))
+        statuses = [t.status for t in run_tasks]
+        if any(s in (TaskStatus.FAILED, TaskStatus.UNSUPPORTED) for s in statuses):
+            overall = "failed"
+        elif any(s in (TaskStatus.PENDING, TaskStatus.RUNNING) for s in statuses):
+            overall = "running"
+        elif len(run_tasks) == 3 and statuses[-1] == TaskStatus.SUCCEEDED:
+            overall = "succeeded"
+        elif len(run_tasks) < 3 and statuses[-1] == TaskStatus.SUCCEEDED and not run_tasks[-1].result_text:
+            # A stage SUCCEEDED but produced no result_text: per the halt
+            # condition in _execute_pipeline, that halts the pipeline for
+            # good (no later-stage task will ever be created), so this is
+            # a terminal failure, not "still running".
+            overall = "failed"
+        else:
+            overall = "running"
+        out.append({"pipeline_run_id": run_id, "status": overall, "tasks": run_tasks})
+
+    out.sort(key=lambda r: r["tasks"][0].created_at, reverse=True)
+    return out

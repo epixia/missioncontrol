@@ -5,7 +5,7 @@ section 4.3: `claude -p --output-format stream-json` for task execution,
 `--settings` for hooks/permissions, `--resume`/`--session-id` for session
 continuity. The npm package ships no public source, so nothing here may
 depend on anything beyond the documented CLI flags (verified live against
-`claude --help` on the installed 2.1.247 build) and the Agent SDK's wire
+`claude --help` on the installed 2.1.250 build) and the Agent SDK's wire
 format.
 """
 
@@ -128,7 +128,6 @@ class ClaudeCodeRuntimeAdapter(RuntimeAdapter):
         args = [
             _CLAUDE_BIN,
             "-p",
-            task.instructions,
             "--output-format",
             "stream-json",
             "--verbose",
@@ -144,9 +143,13 @@ class ClaudeCodeRuntimeAdapter(RuntimeAdapter):
             state.process = await create_subprocess(
                 *args,
                 cwd=str(state.workspace.path),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            state.process.stdin.write(task.instructions.encode())
+            await state.process.stdin.drain()
+            state.process.stdin.close()
         except OSError as exc:
             raise RuntimeAdapterError(ErrorFamily.RUNTIME_CRASH, str(exc)) from exc
         asyncio.create_task(self._pump_events(handle.session_id, state))

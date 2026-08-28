@@ -5,6 +5,10 @@ boundary itself: if an adapter drifts from the RuntimeAdapter ABC, this fails
 at collection time (ABC instantiation), before any runtime-specific test runs.
 """
 
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
+
 import pytest
 
 from mission_control.adapters.base import RuntimeAdapter
@@ -12,7 +16,17 @@ from mission_control.adapters.claude_code import ClaudeCodeRuntimeAdapter
 from mission_control.adapters.codex import CodexRuntimeAdapter
 from mission_control.adapters.hermes import HermesRuntimeAdapter
 from mission_control.adapters.openclaw import OpenClawRuntimeAdapter
-from mission_control.adapters.types import ErrorFamily, RuntimeAdapterError, RuntimeSpec, RuntimeSource, RuntimeType
+from mission_control.adapters.types import (
+    ErrorFamily,
+    RuntimeAdapterError,
+    RuntimeSpec,
+    RuntimeSource,
+    RuntimeType,
+    SessionHandle,
+    SessionRequest,
+    Task,
+    Workspace,
+)
 
 ALL_ADAPTERS = [
     HermesRuntimeAdapter,
@@ -61,3 +75,93 @@ async def test_health_on_unknown_session_is_unknown_not_a_crash(adapter_cls):
     )
     report = await adapter.health(bogus_handle)
     assert report.status in (HealthStatus.UNKNOWN, HealthStatus.UNHEALTHY)
+
+
+async def test_claude_code_send_task_passes_prompt_via_stdin():
+    """Verify that send_task passes the prompt via stdin, not as a positional
+    CLI argument. This is critical on Windows where cmd.exe's /c tokenizer
+    will truncate arguments containing embedded newlines at the first \n,
+    silently dropping flags like --output-format stream-json.
+
+    The fix passes the prompt via stdin (which cmd.exe never tokenizes) and
+    omits task.instructions from the args list.
+    """
+    from datetime import UTC, datetime
+
+    adapter = ClaudeCodeRuntimeAdapter()
+
+    # Create a minimal session
+    workspace = Workspace(path=Path("/tmp/test"))
+    handle = await adapter.start(SessionRequest(
+        mission_id="m1",
+        task_id="t1",
+        workspace=workspace,
+    ))
+
+    # Multi-line prompt that would be truncated on Windows if passed as arg
+    multi_line_prompt = "Say only the word OK.\n\nThis is a second line."
+    task = Task(id="t1", mission_id="m1", instructions=multi_line_prompt)
+
+    # Capture what create_subprocess is called with
+    captured_args = None
+    captured_stdin_writes = []
+
+    async def mock_create_subprocess(*args, **kwargs):
+        nonlocal captured_args, captured_stdin_writes
+        captured_args = args
+
+        # Create a mock process with a fake stdin
+        mock_process = AsyncMock()
+        mock_stdin = Mock()
+        mock_stdin.write = Mock(return_value=None)
+        mock_stdin.drain = AsyncMock()
+        mock_stdin.close = Mock()
+        mock_process.stdin = mock_stdin
+        mock_process.stdout = AsyncMock()
+        mock_process.returncode = 0
+
+        # Track stdin writes
+        def track_write(data):
+            captured_stdin_writes.append(data)
+            return None
+        mock_stdin.write.side_effect = track_write
+
+        # Create an async iterator that returns nothing (empty stream)
+        async def empty_stream():
+            return
+            yield  # make it a generator
+        mock_process.stdout.__aiter__ = Mock(return_value=empty_stream())
+        mock_process.wait = AsyncMock()
+
+        return mock_process
+
+    with patch("mission_control.adapters.claude_code.adapter.create_subprocess", side_effect=mock_create_subprocess):
+        ack = await adapter.send_task(handle, task)
+        assert ack.accepted
+
+    # Verify the fix's contract:
+    # 1. task.instructions should NOT be in the args list (it was before the fix)
+    assert multi_line_prompt not in captured_args, (
+        "BUG: prompt is still being passed as a positional argument! "
+        "This will be truncated by cmd.exe on Windows."
+    )
+
+    # 2. The prompt should be passed via stdin instead
+    assert len(captured_stdin_writes) > 0, "prompt was not written to stdin"
+    written_prompt = captured_stdin_writes[0]
+    assert written_prompt == multi_line_prompt.encode(), (
+        f"Expected prompt to be written to stdin as encoded bytes, "
+        f"got {written_prompt!r}"
+    )
+
+    # 3. Verify the args list still has all the critical flags
+    args_str = " ".join(captured_args)
+    assert "--output-format" in args_str, "missing --output-format flag"
+    assert "stream-json" in args_str, "missing stream-json value"
+    assert "--verbose" in args_str, "missing --verbose flag"
+    assert "--include-partial-messages" in args_str, "missing --include-partial-messages flag"
+    assert "--permission-mode" in args_str, "missing --permission-mode flag"
+    assert "acceptEdits" in args_str, "missing acceptEdits value"
+
+    # Clean up
+    await adapter.destroy(handle)

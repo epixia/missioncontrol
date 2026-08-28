@@ -57,7 +57,7 @@ async def _run_trivial_task(adapter, runtime_type: RuntimeType, version: str):
 
 async def test_claude_code_live_roundtrip():
     adapter = ClaudeCodeRuntimeAdapter()
-    events = await _run_trivial_task(adapter, RuntimeType.CLAUDE_CODE, "2.1.247")
+    events = await _run_trivial_task(adapter, RuntimeType.CLAUDE_CODE, "2.1.250")
     assert events, "expected at least one stream-json event from claude -p"
     assert not any(e.payload.get("is_error") for e in events if e.event_type == "result"), (
         "claude -p reported is_error on its terminal result event"

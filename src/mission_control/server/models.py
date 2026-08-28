@@ -29,6 +29,12 @@ class TaskStatus(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class AgentRole(StrEnum):
+    ORCHESTRATOR = "orchestrator"
+    CODER = "coder"
+    REVIEWER = "reviewer"
+
+
 class Mission(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True)
     name: str
@@ -47,6 +53,9 @@ class MissionTask(SQLModel, table=True):
     total_cost_usd: float = 0.0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    role: AgentRole | None = Field(default=None)
+    pipeline_run_id: str | None = Field(default=None, index=True)
+    result_text: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
