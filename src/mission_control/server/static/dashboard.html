@@ -290,6 +290,7 @@
 const state = {
   missions: [], currentMissionId: null, currentTaskId: null, eventSource: null,
   openTicketId: null, activeAgentRole: null,
+  previewTrackedTaskId: null, previewBaselineStatus: null,
 };
 
 async function fetchJSON(url, opts) {
@@ -397,6 +398,8 @@ document.getElementById("missionForm").addEventListener("submit", async (e) => {
 function openMission(missionId) {
   state.currentMissionId = missionId;
   state.currentTaskId = null;
+  state.previewTrackedTaskId = null;
+  state.previewBaselineStatus = null;
   document.getElementById("viewMissions").classList.add("hidden");
   document.getElementById("viewDetail").classList.remove("hidden");
   setPreviewUrl(missionId);
@@ -409,12 +412,36 @@ function setPreviewUrl(missionId) {
   document.getElementById("previewOpenLink").href = base;
 }
 
+// Reload the preview automatically exactly once, right when the task whose
+// workspace it's showing (the mission's most-recently-created task, same
+// selection rule as the backend's preview route) transitions to succeeded
+// -- not on every 4s poll tick, which would interrupt anyone actively
+// using the preview (e.g. mid-game). A task already succeeded the moment
+// we start tracking it (e.g. reopening a finished mission) is treated as
+// the baseline, not a fresh transition, so opening a mission never
+// triggers a redundant extra reload of what setPreviewUrl already loaded.
+function maybeAutoReloadPreview(missionId, tasks) {
+  if (!tasks.length) return;
+  const latest = tasks.reduce((a, b) => (a.created_at > b.created_at ? a : b));
+  if (latest.id !== state.previewTrackedTaskId) {
+    state.previewTrackedTaskId = latest.id;
+    state.previewBaselineStatus = latest.status;
+    return;
+  }
+  if (latest.status === "succeeded" && state.previewBaselineStatus !== "succeeded") {
+    state.previewBaselineStatus = "succeeded";
+    setPreviewUrl(missionId);
+  }
+}
+
 function closeMission() {
   if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
   state.currentMissionId = null;
   state.currentTaskId = null;
   state.openTicketId = null;
   state.activeAgentRole = null;
+  state.previewTrackedTaskId = null;
+  state.previewBaselineStatus = null;
   document.getElementById("previewFrame").src = "about:blank";
   document.getElementById("viewDetail").classList.add("hidden");
   document.getElementById("viewMissions").classList.remove("hidden");
@@ -644,6 +671,7 @@ async function refreshDetail() {
   await loadPipelines();
   await loadTickets();
   renderActivity(log, tasks, window._detailTickets || []);
+  maybeAutoReloadPreview(missionId, tasks);
 }
 
 // A single reverse-chronological feed merging what the pipeline agents said
