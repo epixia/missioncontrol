@@ -691,3 +691,64 @@ def add_comment(ticket_id: str, req: CreateCommentRequest, author_role: str | No
         session.commit()
         session.refresh(comment)
         return comment
+
+
+_PREVIEW_ALLOWED_EXTENSIONS = {
+    ".html", ".htm", ".css", ".js", ".mjs", ".json", ".svg", ".png", ".jpg", ".jpeg",
+    ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".txt", ".map", ".wasm",
+}
+
+
+# Two routes, one function: FastAPI/Starlette's default redirect_slashes
+# behavior would actually 307-redirect a bare "/preview" request to
+# "/preview/" (query string preserved) and still resolve file_path="" —
+# verified directly against this exact route shape before writing this
+# plan — but registering the bare path explicitly avoids that extra
+# round-trip and doesn't depend on a framework default this app doesn't
+# otherwise rely on elsewhere.
+@app.get("/api/missions/{mission_id}/preview")
+@app.get("/api/missions/{mission_id}/preview/{file_path:path}")
+def preview_file(mission_id: str, file_path: str = "") -> FileResponse:
+    with get_session() as session:
+        mission = session.get(Mission, mission_id)
+        if mission is None:
+            raise HTTPException(404, "mission not found")
+        latest_task = session.exec(
+            select(MissionTask)
+            .where(MissionTask.mission_id == mission_id)
+            .order_by(MissionTask.created_at.desc())
+        ).first()
+    if latest_task is None:
+        raise HTTPException(404, "mission has no tasks yet")
+
+    try:
+        workspace_root = Path(latest_task.workspace_path).resolve()
+        requested = (workspace_root / (file_path or "index.html")).resolve()
+        if requested.is_dir():
+            requested = (requested / "index.html").resolve()
+    except (ValueError, OSError):
+        # e.g. an embedded null byte in file_path raises ValueError on some
+        # Python versions — fail closed with a 404, not an unhandled 500.
+        raise HTTPException(404, "not found")
+
+    # Path-traversal guard: file_path could contain "..". This is the only
+    # route in this app that serves a file by a caller-supplied relative
+    # path, so unlike every other route (which already trusts the local
+    # caller for everything else — full file-write access is already
+    # granted to agents), this one specifically stays inside the resolved
+    # workspace directory no matter what file_path says.
+    if not requested.is_relative_to(workspace_root):
+        raise HTTPException(404, "not found")
+    if not requested.is_file():
+        raise HTTPException(404, "not found — does this project have an index.html?")
+    # Extension allowlist: workspace_path defaults to "." across every
+    # mission-creation form in dashboard.html, which resolves to this
+    # server process's own working directory — normally this repo itself.
+    # Without this, a mission left on that default would serve this
+    # project's own source files over unauthenticated HTTP. Scoping to a
+    # static-web extension set keeps the "static-file preview" promise
+    # honest regardless of what workspace_path actually resolves to.
+    if requested.suffix.lower() not in _PREVIEW_ALLOWED_EXTENSIONS:
+        raise HTTPException(404, "not found")
+
+    return FileResponse(str(requested))
