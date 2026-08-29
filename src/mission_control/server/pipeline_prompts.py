@@ -35,10 +35,19 @@ REVIEWER_PROMPT = (
 )
 
 
+# The kanban block is appended AFTER the goal, and the dashboard's
+# extractGoal() (static/dashboard.html) recovers the raw goal from a stored
+# orchestrator prompt by slicing from "Goal:\n" onward — so it has to know
+# where the goal stops. Both sides split on this exact string; change it in
+# one place and you must change it in the other (guarded by
+# tests/test_pipeline_prompts.py).
+KANBAN_MARKER = "\n\nYou have a shared kanban board"
+
+
 def kanban_instructions(mission_id: str) -> str:
     base = f"http://127.0.0.1:8420/api/missions/{mission_id}/tickets"
     return (
-        "\n\nYou have a shared kanban board for this mission, visible to "
+        f"{KANBAN_MARKER} for this mission, visible to "
         "the user and to the other agents in this pipeline. Use it to "
         "break work into tickets and show progress. You have network "
         "access to Mission Control's own local API via curl:\n"

@@ -179,6 +179,16 @@ def delete_mission(mission_id: str) -> dict:
                 session.delete(event)
             for task in tasks:
                 session.delete(task)
+        # Tickets are mission-scoped too (see the kanban board). SQLite runs
+        # with foreign keys off, so orphaned rows would silently survive the
+        # mission forever rather than raising.
+        tickets = session.exec(select(Ticket).where(Ticket.mission_id == mission_id)).all()
+        if tickets:
+            ticket_ids = [t.id for t in tickets]
+            for comment in session.exec(select(TicketComment).where(TicketComment.ticket_id.in_(ticket_ids))).all():
+                session.delete(comment)
+            for ticket in tickets:
+                session.delete(ticket)
         session.delete(mission)
         session.commit()
     for task_id in task_ids:

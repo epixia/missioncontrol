@@ -25,6 +25,8 @@
 
 The spec called for a dedicated `setInterval` polling the ticket list every 2 seconds. While writing this plan, a simpler fit was found: `dashboard.html` already has one global 4-second interval (`setInterval(() => { state.currentMissionId ? refreshDetail() : loadMissions(); }, 4000);`) that drives every other live element in the mission-detail view (`refreshDetail()` already calls `loadPipelines()` at its end). Task 4 adds `loadTickets()` as one more call at the end of `refreshDetail()`, riding the same cadence and the same trigger points (mission open, task select, message send, etc.) instead of introducing a second, separately-managed interval with its own start/stop lifecycle. This keeps the "live, refreshes on its own" intent of the spec with less code and no new cleanup path to get wrong.
 
+A second, initially undisclosed deviation, recorded here after the final review caught it: the spec's card design also called for "a comment-count badge if `comments.length > 0`." Task 4 shipped title + role tag only. Adding the badge would require `GET /api/missions/{mission_id}/tickets` to also carry comment-count data (it currently returns bare `Ticket` rows with no comment information at all), which is an API surface change, not a UI-only tweak. Deferred — no user-facing demand for it yet, and clicking a card already surfaces its full comment thread.
+
 ---
 
 ### Task 1: Ticket data model

@@ -96,18 +96,18 @@
   .agent-tab .icon.pending, .agent-tab .icon.unsupported { color: var(--dimmer); }
 
   #kanbanBoard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
-  .kanban-col { display: flex; flex-direction: column; gap: 0.4rem; }
+  .kanban-col { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
   .kanban-col-header { color: var(--dim); text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.05em;
                         border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; margin-bottom: 0.2rem; }
   .ticket-card { border: 1px solid var(--border); border-radius: 3px; padding: 0.4rem 0.55rem; cursor: pointer;
                  font-size: 0.9em; }
   .ticket-card:hover { border-color: var(--border-lit); background: var(--panel); }
-  .ticket-card .title { color: var(--text); }
+  .ticket-card .title { color: var(--text); overflow-wrap: anywhere; }
   .ticket-card .meta { color: var(--dimmer); font-size: 0.85em; margin-top: 0.2rem; }
   .ticket-card .role-tag { text-transform: capitalize; }
   .ticket-detail { border: 1px solid var(--border-lit); border-radius: 3px; padding: 0.6rem 0.7rem;
                    margin-top: 0.4rem; grid-column: 1 / -1; }
-  .ticket-detail .desc { color: var(--text); margin-bottom: 0.5rem; white-space: pre-wrap; }
+  .ticket-detail .desc { color: var(--text); margin-bottom: 0.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
   .ticket-comment { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
   .ticket-comment b { color: var(--white); font-weight: normal; text-transform: capitalize; }
 
@@ -289,13 +289,17 @@ function mdBold(s) {
   return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
 }
 
-// The pipeline's persona prompts always end with "Goal:\n<goal text>" — pull
-// just the goal back out for a readable run header instead of showing the
-// whole persona preamble.
+// The pipeline's persona prompts are "<persona>Goal:\n<goal text>" followed by
+// the kanban instructions block — pull just the goal back out for a readable
+// run header instead of showing the whole persona preamble or the ~700 chars
+// of kanban boilerplate. KANBAN_MARKER must match pipeline_prompts.py's
+// constant of the same name.
+const KANBAN_MARKER = "\n\nYou have a shared kanban board";
 function extractGoal(orchestratorTask) {
   const marker = "Goal:\n";
   const idx = orchestratorTask.prompt.indexOf(marker);
-  return idx >= 0 ? orchestratorTask.prompt.slice(idx + marker.length) : orchestratorTask.prompt;
+  const rest = idx >= 0 ? orchestratorTask.prompt.slice(idx + marker.length) : orchestratorTask.prompt;
+  return rest.split(KANBAN_MARKER)[0];
 }
 
 // ---------- Missions list view ----------
