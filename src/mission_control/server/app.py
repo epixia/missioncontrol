@@ -460,7 +460,7 @@ def _start_pipeline(mission_id: str, goal: str, workspace_path: str) -> tuple[st
     pipeline_run_id = str(uuid.uuid4())
     orchestrator_task_id = _create_pipeline_task(
         mission_id, pipeline_run_id, AgentRole.ORCHESTRATOR,
-        build_orchestrator_prompt(goal), workspace_path,
+        build_orchestrator_prompt(goal, mission_id), workspace_path,
     )
     task = asyncio.create_task(
         _execute_pipeline(pipeline_run_id, mission_id, goal, workspace_path, orchestrator_task_id)
@@ -519,7 +519,7 @@ async def _execute_pipeline(
 
         coder_task_id = _create_pipeline_task(
             mission_id, pipeline_run_id, AgentRole.CODER,
-            build_coder_prompt(goal, orchestrator.result_text), workspace_path,
+            build_coder_prompt(goal, orchestrator.result_text, mission_id), workspace_path,
         )
         current_task_id = coder_task_id
         await _execute_task(coder_task_id)
@@ -529,7 +529,7 @@ async def _execute_pipeline(
 
         reviewer_task_id = _create_pipeline_task(
             mission_id, pipeline_run_id, AgentRole.REVIEWER,
-            build_reviewer_prompt(goal, coder.result_text), workspace_path,
+            build_reviewer_prompt(goal, coder.result_text, mission_id), workspace_path,
         )
         current_task_id = reviewer_task_id
         await _execute_task(reviewer_task_id)

@@ -35,16 +35,38 @@ REVIEWER_PROMPT = (
 )
 
 
-def build_orchestrator_prompt(goal: str) -> str:
-    return f"{ORCHESTRATOR_PROMPT}{goal}"
+def kanban_instructions(mission_id: str) -> str:
+    base = f"http://127.0.0.1:8420/api/missions/{mission_id}/tickets"
+    return (
+        "\n\nYou have a shared kanban board for this mission, visible to "
+        "the user and to the other agents in this pipeline. Use it to "
+        "break work into tickets and show progress. You have network "
+        "access to Mission Control's own local API via curl:\n"
+        f"- Create a ticket: curl -s -X POST '{base}?author_role=<your-role>' "
+        "-H 'Content-Type: application/json' "
+        '-d \'{"title": "...", "description": "..."}\'\n'
+        "- Move a ticket (column is one of backlog/todo/doing/done): "
+        "curl -s -X PATCH 'http://127.0.0.1:8420/api/tickets/<ticket_id>' "
+        "-H 'Content-Type: application/json' -d '{\"column\": \"doing\"}'\n"
+        "- Comment on a ticket: "
+        "curl -s -X POST "
+        "'http://127.0.0.1:8420/api/tickets/<ticket_id>/comments?author_role=<your-role>' "
+        "-H 'Content-Type: application/json' -d '{\"text\": \"...\"}'\n"
+        "This is optional but encouraged — use it to make your work "
+        "visible, not as a substitute for your actual output."
+    )
 
 
-def build_coder_prompt(goal: str, orchestrator_result: str) -> str:
-    return f"{CODER_PROMPT}{goal}\n\nOrchestrator's plan:\n{orchestrator_result}"
+def build_orchestrator_prompt(goal: str, mission_id: str) -> str:
+    return f"{ORCHESTRATOR_PROMPT}{goal}{kanban_instructions(mission_id)}"
 
 
-def build_reviewer_prompt(goal: str, coder_result: str) -> str:
-    return f"{REVIEWER_PROMPT}{goal}\n\nCoder's work:\n{coder_result}"
+def build_coder_prompt(goal: str, orchestrator_result: str, mission_id: str) -> str:
+    return f"{CODER_PROMPT}{goal}\n\nOrchestrator's plan:\n{orchestrator_result}{kanban_instructions(mission_id)}"
+
+
+def build_reviewer_prompt(goal: str, coder_result: str, mission_id: str) -> str:
+    return f"{REVIEWER_PROMPT}{goal}\n\nCoder's work:\n{coder_result}{kanban_instructions(mission_id)}"
 
 
 def extract_claude_code_result_text(event_type: str, payload: dict[str, Any]) -> str | None:
