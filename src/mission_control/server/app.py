@@ -455,13 +455,17 @@ def mission_log(mission_id: str) -> list[dict]:
             return []
         events = session.exec(
             select(TaskEvent)
-            .where(TaskEvent.task_id.in_(task_meta.keys()), TaskEvent.event_type == "status_changed")
+            .where(
+                TaskEvent.task_id.in_(task_meta.keys()),
+                TaskEvent.event_type.in_(("status_changed", "user_message")),
+            )
             .order_by(TaskEvent.timestamp.desc())
             .limit(200)
         ).all()
         return [
             {
                 "task_id": e.task_id,
+                "event_type": e.event_type,
                 **task_meta.get(e.task_id, {"runtime": "?", "role": None}),
                 "timestamp": e.timestamp.isoformat(),
                 **json.loads(e.payload_json),

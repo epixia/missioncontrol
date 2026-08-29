@@ -122,6 +122,12 @@
   #logList .row .st-failed { color: var(--red); }
   #logList .row .st-running { color: var(--accent); }
 
+  #activityList { display: flex; flex-direction: column; gap: 0.35rem; max-height: 320px; overflow-y: auto;
+                  font-size: 0.88em; }
+  #activityList .row { color: var(--dim); }
+  #activityList .row .ago { color: var(--dimmer); display: inline-block; width: 4.5rem; vertical-align: top; }
+  #activityList .row b { color: var(--white); font-weight: normal; }
+
   #activeTaskMeta { color: var(--dim); line-height: 1.7; }
   #activeTaskMeta b { color: var(--text); font-weight: normal; }
   #activeTaskMeta .prompt-block { border-left: 2px solid var(--border-lit); padding: 0.5rem 0.8rem;
@@ -219,6 +225,11 @@
   <div class="panel" id="kanbanPanel" style="margin-bottom:0.6rem;">
     <h2>Kanban <span class="count" id="kanbanCount"></span></h2>
     <div id="kanbanBoard"><span class="t-empty">no tickets yet</span></div>
+  </div>
+
+  <div class="panel" id="activityPanel" style="margin-bottom:0.6rem;">
+    <h2>Activity <span class="count" id="activityCount"></span></h2>
+    <div id="activityList"><span class="t-empty">no activity yet</span></div>
   </div>
 
   <div id="detailGrid">
@@ -469,6 +480,7 @@ async function loadPipelines() {
 async function loadTickets() {
   if (!state.currentMissionId) return;
   const tickets = await fetchJSON(`/api/missions/${state.currentMissionId}/tickets`);
+  window._detailTickets = tickets;
   document.getElementById("kanbanCount").textContent = tickets.length;
   const board = document.getElementById("kanbanBoard");
   if (!tickets.length) { board.innerHTML = '<span class="t-empty">no tickets yet</span>'; return; }
@@ -557,9 +569,10 @@ async function refreshDetail() {
   }
 
   const log = await fetchJSON(`/api/missions/${missionId}/log`);
+  const statusEntries = log.filter(e => e.event_type === "status_changed");
   const logList = document.getElementById("logList");
-  logList.innerHTML = log.length ? "" : '<span class="t-empty">no activity yet</span>';
-  for (const entry of log) {
+  logList.innerHTML = statusEntries.length ? "" : '<span class="t-empty">no activity yet</span>';
+  for (const entry of statusEntries) {
     const row = document.createElement("div");
     row.className = "row";
     const label = entry.role || entry.runtime;
@@ -575,6 +588,52 @@ async function refreshDetail() {
   window._detailTasks = tasks;
   await loadPipelines();
   await loadTickets();
+  renderActivity(log, tasks, window._detailTickets || []);
+}
+
+// A single reverse-chronological feed merging what the pipeline agents said
+// to each other (each stage's own result/error text), kanban ticket
+// create/update events, and user chat messages — so it reads like one
+// conversation instead of three separate panels. Ticket "updated" here is
+// an approximation: Ticket has no move-history table, so a changed
+// updated_at just means the ticket was edited at least once since creation
+// (almost always a column move, per the agents' kanban instructions) —
+// it can't show every intermediate move, only that one happened.
+function renderActivity(log, tasks, tickets) {
+  const entries = [];
+
+  for (const e of log) {
+    if (e.event_type === "user_message") {
+      entries.push({ ts: e.timestamp, html: `<b>you → ${escapeHtml(e.role || e.runtime)}:</b> ${escapeHtml(e.text || "")}` });
+    }
+  }
+
+  for (const t of tasks) {
+    if (!t.role) continue;  // only pipeline agents "talk" in this feed
+    const text = t.result_text || t.error_detail;
+    if (!text) continue;
+    entries.push({ ts: t.updated_at, html: `<b>${escapeHtml(t.role)}:</b> ${mdBold(text.slice(0, 300))}` });
+  }
+
+  for (const tk of tickets) {
+    const who = tk.created_by_role ? escapeHtml(tk.created_by_role) : "someone";
+    entries.push({ ts: tk.created_at, html: `<b>${who} created ticket:</b> ${escapeHtml(tk.title)}` });
+    if (tk.updated_at !== tk.created_at) {
+      entries.push({ ts: tk.updated_at, html: `ticket "${escapeHtml(tk.title)}" is now in <b>${escapeHtml(tk.column)}</b>` });
+    }
+  }
+
+  entries.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+
+  const list = document.getElementById("activityList");
+  document.getElementById("activityCount").textContent = entries.length;
+  list.innerHTML = entries.length ? "" : '<span class="t-empty">no activity yet</span>';
+  for (const entry of entries.slice(0, 100)) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="ago">${timeAgo(entry.ts)}</span> ${entry.html}`;
+    list.appendChild(row);
+  }
 }
 
 function renderActiveTaskMeta(task) {
