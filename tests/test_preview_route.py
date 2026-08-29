@@ -123,3 +123,22 @@ def test_preview_uses_most_recently_created_tasks_workspace(tmp_path, monkeypatc
 
     response = app_module.preview_file(mission_id, "")
     assert response.path == str(newer_dir / "index.html")
+
+
+def test_preview_404_on_disallowed_extension(tmp_path, monkeypatch):
+    (tmp_path / "index.html").write_text("<h1>hi</h1>")
+    (tmp_path / "secret.py").write_text("print('leaked')")
+    mission_id = _make_mission_with_task(monkeypatch, str(tmp_path))
+
+    with pytest.raises(HTTPException) as excinfo:
+        app_module.preview_file(mission_id, "secret.py")
+    assert excinfo.value.status_code == 404
+
+
+def test_preview_404_not_500_on_embedded_null_byte(tmp_path, monkeypatch):
+    (tmp_path / "index.html").write_text("<h1>hi</h1>")
+    mission_id = _make_mission_with_task(monkeypatch, str(tmp_path))
+
+    with pytest.raises(HTTPException) as excinfo:
+        app_module.preview_file(mission_id, "\x00")
+    assert excinfo.value.status_code == 404

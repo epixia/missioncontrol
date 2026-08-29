@@ -693,6 +693,12 @@ def add_comment(ticket_id: str, req: CreateCommentRequest, author_role: str | No
         return comment
 
 
+_PREVIEW_ALLOWED_EXTENSIONS = {
+    ".html", ".htm", ".css", ".js", ".mjs", ".json", ".svg", ".png", ".jpg", ".jpeg",
+    ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".txt", ".map", ".wasm",
+}
+
+
 # Two routes, one function: FastAPI/Starlette's default redirect_slashes
 # behavior would actually 307-redirect a bare "/preview" request to
 # "/preview/" (query string preserved) and still resolve file_path="" —
@@ -715,10 +721,15 @@ def preview_file(mission_id: str, file_path: str = "") -> FileResponse:
     if latest_task is None:
         raise HTTPException(404, "mission has no tasks yet")
 
-    workspace_root = Path(latest_task.workspace_path).resolve()
-    requested = (workspace_root / (file_path or "index.html")).resolve()
-    if requested.is_dir():
-        requested = requested / "index.html"
+    try:
+        workspace_root = Path(latest_task.workspace_path).resolve()
+        requested = (workspace_root / (file_path or "index.html")).resolve()
+        if requested.is_dir():
+            requested = (requested / "index.html").resolve()
+    except (ValueError, OSError):
+        # e.g. an embedded null byte in file_path raises ValueError on some
+        # Python versions — fail closed with a 404, not an unhandled 500.
+        raise HTTPException(404, "not found")
 
     # Path-traversal guard: file_path could contain "..". This is the only
     # route in this app that serves a file by a caller-supplied relative
@@ -730,5 +741,14 @@ def preview_file(mission_id: str, file_path: str = "") -> FileResponse:
         raise HTTPException(404, "not found")
     if not requested.is_file():
         raise HTTPException(404, "not found — does this project have an index.html?")
+    # Extension allowlist: workspace_path defaults to "." across every
+    # mission-creation form in dashboard.html, which resolves to this
+    # server process's own working directory — normally this repo itself.
+    # Without this, a mission left on that default would serve this
+    # project's own source files over unauthenticated HTTP. Scoping to a
+    # static-web extension set keeps the "static-file preview" promise
+    # honest regardless of what workspace_path actually resolves to.
+    if requested.suffix.lower() not in _PREVIEW_ALLOWED_EXTENSIONS:
+        raise HTTPException(404, "not found")
 
     return FileResponse(str(requested))
