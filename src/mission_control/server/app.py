@@ -310,7 +310,20 @@ async def _execute_task(task_id: str) -> None:
             # Non-fatal version mismatch (see architecture doc §12) — proceed.
 
         state_dir = _RUNTIME_STATE_ROOT / runtime.value
-        await adapter.configure(RuntimeConfig(runtime_type=runtime, state_dir=state_dir))
+        # claude_code's kanban_instructions() (pipeline_prompts.py) tells
+        # agents to talk to our local API via curl. --permission-mode
+        # acceptEdits auto-approves file edits but still gates network-
+        # capable Bash commands like curl behind interactive approval —
+        # which never comes in a non-interactive pipeline run, so every curl
+        # call was silently rejected. This app already grants acceptEdits
+        # (unrestricted file writes) under the same local single-user trust
+        # model, so allowing curl too is not a meaningfully larger surface.
+        # Other adapters' configure() ignore unknown `extra` keys, so this is
+        # safe to pass unconditionally rather than branching on runtime type.
+        await adapter.configure(RuntimeConfig(
+            runtime_type=runtime, state_dir=state_dir,
+            extra={"settings": {"permissions": {"allow": ["Bash(curl:*)"]}}},
+        ))
 
         with get_session() as session:
             task = session.get(MissionTask, task_id)
