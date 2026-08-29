@@ -127,7 +127,10 @@ class CreateCommentRequest(BaseModel):
 
 @app.get("/")
 def dashboard() -> FileResponse:
-    return FileResponse(_STATIC_DIR / "dashboard.html")
+    # This file changes frequently during development; without an explicit
+    # no-cache header, browsers tend to keep serving a stale copy after a
+    # server restart, making a real fix look like it didn't take effect.
+    return FileResponse(_STATIC_DIR / "dashboard.html", headers={"Cache-Control": "no-store"})
 
 
 _RUNTIME_BINARIES = {
