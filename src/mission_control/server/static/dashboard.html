@@ -117,11 +117,10 @@
   .ticket-comment { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
   .ticket-comment b { color: var(--white); font-weight: normal; text-transform: capitalize; }
 
-  #logList { display: flex; flex-direction: column; gap: 0.3rem; max-height: 320px; overflow-y: auto;
+  #logList { display: flex; flex-direction: column; gap: 0.5rem; max-height: 320px; overflow-y: auto;
              font-size: 0.95em; margin-top: 0.7rem; }
-  #logList .row { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                  line-height: 1.5; padding: 0.05rem 0; }
-  #logList .row .ago { color: var(--dimmer); display: inline-block; width: 4.5rem; }
+  #logList .row { color: var(--dim); line-height: 1.6; }
+  #logList .row .ago { color: var(--dimmer); margin-right: 0.6rem; }
   #logList .row .st-succeeded { color: var(--green); }
   #logList .row .st-failed { color: var(--red); }
   #logList .row .st-running { color: var(--accent); }
@@ -851,7 +850,6 @@ async function loadHealth() {
 
 document.getElementById("restartBtn").addEventListener("click", async () => {
   const btn = document.getElementById("restartBtn");
-  if (!confirm("Restart the Mission Control server?")) return;
   btn.disabled = true;
   btn.textContent = "Restarting…";
   try {
