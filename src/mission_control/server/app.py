@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
+import subprocess
+import sys
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -140,6 +144,24 @@ def platform_health() -> dict:
         "status": "ok",
         "runtimes": {r.value: shutil.which(binary) is not None for r, binary in _RUNTIME_BINARIES.items()},
     }
+
+
+@app.post("/api/restart")
+def restart_server() -> dict:
+    """Spawn a fresh detached copy of this server, then exit this process a
+    moment later — long enough for this response to actually reach the
+    client before the port is released. There's an inherent gap (the new
+    process needs to bind 8420 after this one releases it) where the
+    dashboard will see a connection error; the frontend polls /api/health
+    and reloads once the new process answers."""
+    kwargs: dict = {"cwd": os.getcwd()}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([sys.executable, "-m", "mission_control.server"], **kwargs)
+    threading.Timer(1.0, lambda: os._exit(0)).start()
+    return {"restarting": True}
 
 
 def _mission_workspace_dir(mission: Mission) -> str:

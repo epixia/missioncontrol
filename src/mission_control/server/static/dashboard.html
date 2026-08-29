@@ -179,6 +179,7 @@
 <div id="topbar">
   <div><span class="title"><span class="sigil">∴</span>MISSION CONTROL</span><span class="path" id="topbarPath">/</span></div>
   <div class="stats" id="topbarStats"></div>
+  <button type="button" class="ghost" id="restartBtn">Restart server</button>
 </div>
 
 <!-- MISSIONS LIST VIEW -->
@@ -818,6 +819,28 @@ async function loadHealth() {
     `<span style="color:${ok ? 'var(--green)' : 'var(--red)'}">${n}</span>`).join(" · ");
   document.getElementById("topbarStats").innerHTML = state.currentMissionId ? document.getElementById("topbarStats").innerHTML : bits;
 }
+
+document.getElementById("restartBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("restartBtn");
+  if (!confirm("Restart the Mission Control server?")) return;
+  btn.disabled = true;
+  btn.textContent = "Restarting…";
+  try {
+    await fetchJSON("/api/restart", { method: "POST" });
+  } catch (err) {
+    // The old process may already be tearing down its connection by the
+    // time this response would arrive — that's expected, not a failure.
+  }
+  const pollForRestart = setInterval(async () => {
+    try {
+      await fetchJSON("/api/health");
+      clearInterval(pollForRestart);
+      location.reload();
+    } catch (err) {
+      // Still down — keep polling.
+    }
+  }, 500);
+});
 
 document.addEventListener("keydown", (e) => {
   if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "SELECT") return;
