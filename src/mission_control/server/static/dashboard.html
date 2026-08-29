@@ -117,9 +117,10 @@
   .ticket-comment { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
   .ticket-comment b { color: var(--white); font-weight: normal; text-transform: capitalize; }
 
-  #logList { display: flex; flex-direction: column; gap: 0.15rem; max-height: 220px; overflow-y: auto;
-             font-size: 0.85em; margin-top: 0.7rem; }
-  #logList .row { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #logList { display: flex; flex-direction: column; gap: 0.3rem; max-height: 320px; overflow-y: auto;
+             font-size: 0.95em; margin-top: 0.7rem; }
+  #logList .row { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                  line-height: 1.5; padding: 0.05rem 0; }
   #logList .row .ago { color: var(--dimmer); display: inline-block; width: 4.5rem; }
   #logList .row .st-succeeded { color: var(--green); }
   #logList .row .st-failed { color: var(--red); }
@@ -651,7 +652,7 @@ async function refreshDetail() {
   }
 
   const log = await fetchJSON(`/api/missions/${missionId}/log`);
-  const statusEntries = log.filter(e => e.event_type === "status_changed");
+  const statusEntries = log.filter(e => e.event_type === "status_changed").slice(0, 30);
   const logList = document.getElementById("logList");
   logList.innerHTML = statusEntries.length ? "" : '<span class="t-empty">no activity yet</span>';
   for (const entry of statusEntries) {
