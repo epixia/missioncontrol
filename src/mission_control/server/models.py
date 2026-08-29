@@ -68,3 +68,30 @@ class TaskEvent(SQLModel, table=True):
     payload_json: str
     error_family: str | None = None
     timestamp: datetime = Field(default_factory=_now)
+
+
+class TicketColumn(StrEnum):
+    BACKLOG = "backlog"
+    TODO = "todo"
+    DOING = "doing"
+    DONE = "done"
+
+
+class Ticket(SQLModel, table=True):
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    mission_id: str = Field(foreign_key="mission.id", index=True)
+    title: str
+    description: str = Field(default="")
+    column: TicketColumn = Field(default=TicketColumn.BACKLOG)
+    created_by_role: str | None = Field(default=None)
+    position: int = Field(default=0)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class TicketComment(SQLModel, table=True):
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    ticket_id: str = Field(foreign_key="ticket.id", index=True)
+    author_role: str | None = Field(default=None)
+    text: str
+    created_at: datetime = Field(default_factory=_now)
