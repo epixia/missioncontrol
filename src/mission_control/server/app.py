@@ -138,6 +138,29 @@ def list_missions() -> list[dict]:
         return out
 
 
+@app.delete("/api/missions/{mission_id}")
+def delete_mission(mission_id: str) -> dict:
+    with get_session() as session:
+        mission = session.get(Mission, mission_id)
+        if mission is None:
+            raise HTTPException(404, "mission not found")
+        tasks = session.exec(select(MissionTask).where(MissionTask.mission_id == mission_id)).all()
+        if any(t.status == TaskStatus.RUNNING for t in tasks):
+            raise HTTPException(409, "cannot delete a mission with a running task — stop it first")
+        task_ids = [t.id for t in tasks]
+        if task_ids:
+            for event in session.exec(select(TaskEvent).where(TaskEvent.task_id.in_(task_ids))).all():
+                session.delete(event)
+            for task in tasks:
+                session.delete(task)
+        session.delete(mission)
+        session.commit()
+    for task_id in task_ids:
+        _pending_messages.pop(task_id, None)
+        _active_handles.pop(task_id, None)
+    return {"deleted": True}
+
+
 @app.post("/api/missions/{mission_id}/tasks", response_model=MissionTask)
 async def create_task(mission_id: str, req: CreateTaskRequest) -> MissionTask:
     with get_session() as session:
