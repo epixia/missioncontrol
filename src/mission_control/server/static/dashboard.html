@@ -301,14 +301,13 @@ async function loadMissions() {
     row.addEventListener("click", () => openMission(mission.id));
     row.querySelector(".del-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      deleteMission(mission.id, mission.name);
+      deleteMission(mission.id);
     });
     grid.appendChild(row);
   }
 }
 
-async function deleteMission(missionId, missionName) {
-  if (!confirm(`Delete mission "${missionName}"? This cannot be undone.`)) return;
+async function deleteMission(missionId) {
   try {
     await fetchJSON(`/api/missions/${missionId}`, { method: "DELETE" });
   } catch (err) {
