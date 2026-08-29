@@ -12,6 +12,7 @@ import shutil
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -31,7 +32,16 @@ from mission_control.adapters.types import (
     Workspace,
 )
 from mission_control.server.db import get_session, init_db
-from mission_control.server.models import AgentRole, Mission, MissionTask, TaskEvent, TaskStatus
+from mission_control.server.models import (
+    AgentRole,
+    Mission,
+    MissionTask,
+    TaskEvent,
+    TaskStatus,
+    Ticket,
+    TicketColumn,
+    TicketComment,
+)
 from mission_control.server.pipeline_prompts import (
     build_coder_prompt,
     build_orchestrator_prompt,
@@ -87,6 +97,22 @@ class CreateTaskRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
+    text: str
+
+
+class CreateTicketRequest(BaseModel):
+    title: str
+    description: str = ""
+    column: TicketColumn = TicketColumn.BACKLOG
+
+
+class UpdateTicketRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    column: TicketColumn | None = None
+
+
+class CreateCommentRequest(BaseModel):
     text: str
 
 
@@ -558,3 +584,83 @@ def list_pipelines(mission_id: str) -> list[dict]:
 
     out.sort(key=lambda r: r["tasks"][0].created_at, reverse=True)
     return out
+
+
+def _next_ticket_position(session, mission_id: str, column: TicketColumn) -> int:
+    existing = session.exec(
+        select(Ticket).where(Ticket.mission_id == mission_id, Ticket.column == column)
+    ).all()
+    return max((t.position for t in existing), default=-1) + 1
+
+
+@app.post("/api/missions/{mission_id}/tickets", response_model=Ticket)
+def create_ticket(mission_id: str, req: CreateTicketRequest, author_role: str | None = None) -> Ticket:
+    with get_session() as session:
+        mission = session.get(Mission, mission_id)
+        if mission is None:
+            raise HTTPException(404, "mission not found")
+        ticket = Ticket(
+            mission_id=mission_id,
+            title=req.title,
+            description=req.description,
+            column=req.column,
+            created_by_role=author_role,
+            position=_next_ticket_position(session, mission_id, req.column),
+        )
+        session.add(ticket)
+        session.commit()
+        session.refresh(ticket)
+        return ticket
+
+
+@app.get("/api/missions/{mission_id}/tickets", response_model=list[Ticket])
+def list_tickets(mission_id: str) -> list[Ticket]:
+    with get_session() as session:
+        tickets = session.exec(select(Ticket).where(Ticket.mission_id == mission_id)).all()
+    column_order = {c: i for i, c in enumerate(TicketColumn)}
+    return sorted(tickets, key=lambda t: (column_order[t.column], t.position))
+
+
+@app.patch("/api/tickets/{ticket_id}", response_model=Ticket)
+def update_ticket(ticket_id: str, req: UpdateTicketRequest) -> Ticket:
+    with get_session() as session:
+        ticket = session.get(Ticket, ticket_id)
+        if ticket is None:
+            raise HTTPException(404, "ticket not found")
+        if req.title is not None:
+            ticket.title = req.title
+        if req.description is not None:
+            ticket.description = req.description
+        if req.column is not None and req.column != ticket.column:
+            ticket.position = _next_ticket_position(session, ticket.mission_id, req.column)
+            ticket.column = req.column
+        ticket.updated_at = datetime.now(UTC)
+        session.add(ticket)
+        session.commit()
+        session.refresh(ticket)
+        return ticket
+
+
+@app.get("/api/tickets/{ticket_id}")
+def get_ticket(ticket_id: str) -> dict:
+    with get_session() as session:
+        ticket = session.get(Ticket, ticket_id)
+        if ticket is None:
+            raise HTTPException(404, "ticket not found")
+        comments = session.exec(
+            select(TicketComment).where(TicketComment.ticket_id == ticket_id).order_by(TicketComment.created_at)
+        ).all()
+        return {**ticket.model_dump(), "comments": [c.model_dump() for c in comments]}
+
+
+@app.post("/api/tickets/{ticket_id}/comments", response_model=TicketComment)
+def add_comment(ticket_id: str, req: CreateCommentRequest, author_role: str | None = None) -> TicketComment:
+    with get_session() as session:
+        ticket = session.get(Ticket, ticket_id)
+        if ticket is None:
+            raise HTTPException(404, "ticket not found")
+        comment = TicketComment(ticket_id=ticket_id, author_role=author_role, text=req.text)
+        session.add(comment)
+        session.commit()
+        session.refresh(comment)
+        return comment
