@@ -95,6 +95,22 @@
   .agent-tab .icon.running { color: var(--accent); }
   .agent-tab .icon.pending, .agent-tab .icon.unsupported { color: var(--dimmer); }
 
+  #kanbanBoard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
+  .kanban-col { display: flex; flex-direction: column; gap: 0.4rem; }
+  .kanban-col-header { color: var(--dim); text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.05em;
+                        border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; margin-bottom: 0.2rem; }
+  .ticket-card { border: 1px solid var(--border); border-radius: 3px; padding: 0.4rem 0.55rem; cursor: pointer;
+                 font-size: 0.9em; }
+  .ticket-card:hover { border-color: var(--border-lit); background: var(--panel); }
+  .ticket-card .title { color: var(--text); }
+  .ticket-card .meta { color: var(--dimmer); font-size: 0.85em; margin-top: 0.2rem; }
+  .ticket-card .role-tag { text-transform: capitalize; }
+  .ticket-detail { border: 1px solid var(--border-lit); border-radius: 3px; padding: 0.6rem 0.7rem;
+                   margin-top: 0.4rem; grid-column: 1 / -1; }
+  .ticket-detail .desc { color: var(--text); margin-bottom: 0.5rem; white-space: pre-wrap; }
+  .ticket-comment { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
+  .ticket-comment b { color: var(--white); font-weight: normal; text-transform: capitalize; }
+
   .comm-line { color: var(--dim); padding: 0.15rem 0; font-size: 0.88em; }
   .comm-line b { color: var(--white); font-weight: normal; }
 
@@ -200,6 +216,11 @@
     <div id="pipelineRuns"><span class="t-empty">no pipeline runs yet</span></div>
   </div>
 
+  <div class="panel" id="kanbanPanel" style="margin-bottom:0.6rem;">
+    <h2>Kanban <span class="count" id="kanbanCount"></span></h2>
+    <div id="kanbanBoard"><span class="t-empty">no tickets yet</span></div>
+  </div>
+
   <div id="detailGrid">
     <div class="panel">
       <h2>Active Task <span class="count" id="activeTaskId"></span></h2>
@@ -235,7 +256,7 @@
 </div>
 
 <script>
-const state = { missions: [], currentMissionId: null, currentTaskId: null, eventSource: null };
+const state = { missions: [], currentMissionId: null, currentTaskId: null, eventSource: null, openTicketId: null };
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, opts);
@@ -347,6 +368,7 @@ function closeMission() {
   if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
   state.currentMissionId = null;
   state.currentTaskId = null;
+  state.openTicketId = null;
   document.getElementById("viewDetail").classList.add("hidden");
   document.getElementById("viewMissions").classList.remove("hidden");
   document.getElementById("topbarPath").textContent = "/";
@@ -440,6 +462,54 @@ async function loadPipelines() {
   }
 }
 
+async function loadTickets() {
+  if (!state.currentMissionId) return;
+  const tickets = await fetchJSON(`/api/missions/${state.currentMissionId}/tickets`);
+  document.getElementById("kanbanCount").textContent = tickets.length;
+  const board = document.getElementById("kanbanBoard");
+  if (!tickets.length) { board.innerHTML = '<span class="t-empty">no tickets yet</span>'; return; }
+
+  board.innerHTML = "";
+  for (const col of ["backlog", "todo", "doing", "done"]) {
+    const colDiv = document.createElement("div");
+    colDiv.className = "kanban-col";
+    const colTickets = tickets.filter(t => t.column === col);
+    const header = document.createElement("div");
+    header.className = "kanban-col-header";
+    header.textContent = `${col} (${colTickets.length})`;
+    colDiv.appendChild(header);
+    for (const ticket of colTickets) {
+      const card = document.createElement("div");
+      card.className = "ticket-card";
+      card.innerHTML = `<div class="title">${escapeHtml(ticket.title)}</div>` +
+        (ticket.created_by_role ? `<div class="meta role-tag">${escapeHtml(ticket.created_by_role)}</div>` : "");
+      card.addEventListener("click", () => toggleTicketDetail(ticket.id));
+      colDiv.appendChild(card);
+    }
+    board.appendChild(colDiv);
+  }
+  if (state.openTicketId) await renderTicketDetail(state.openTicketId);
+}
+
+async function toggleTicketDetail(ticketId) {
+  state.openTicketId = state.openTicketId === ticketId ? null : ticketId;
+  document.getElementById("ticketDetail")?.remove();
+  if (state.openTicketId) await renderTicketDetail(state.openTicketId);
+}
+
+async function renderTicketDetail(ticketId) {
+  const ticket = await fetchJSON(`/api/tickets/${ticketId}`);
+  document.getElementById("ticketDetail")?.remove();
+  const detail = document.createElement("div");
+  detail.id = "ticketDetail";
+  detail.className = "ticket-detail";
+  const comments = ticket.comments.map(c =>
+    `<div class="ticket-comment"><b>${escapeHtml(c.author_role || "?")}:</b> ${escapeHtml(c.text)}</div>`
+  ).join("");
+  detail.innerHTML = `<div class="desc">${escapeHtml(ticket.description || "(no description)")}</div>${comments}`;
+  document.getElementById("kanbanBoard").appendChild(detail);
+}
+
 async function refreshDetail() {
   const missionId = state.currentMissionId;
   const missions = await fetchJSON("/api/missions");
@@ -500,6 +570,7 @@ async function refreshDetail() {
 
   window._detailTasks = tasks;
   await loadPipelines();
+  await loadTickets();
 }
 
 function renderActiveTaskMeta(task) {
