@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import uuid
 from collections.abc import AsyncIterator
@@ -52,6 +53,10 @@ from mission_control.server.runtime_registry import get_adapter, load_pinned_spe
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _RUNTIME_STATE_ROOT = Path.home() / ".mission-control" / "runtimes"
+# Anchored to this file's location (like _STATIC_DIR above), not the
+# server's launch directory — the same "missions/" folder no matter where
+# `python -m mission_control.server` happens to be run from.
+_MISSIONS_ROOT = Path(__file__).parent.parent.parent.parent / "missions"
 
 # Strong references to fire-and-forget background tasks (e.g. the pipeline
 # runner) so they aren't garbage-collected mid-execution — the event loop
@@ -93,7 +98,7 @@ class CreateMissionRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     runtime: RuntimeType
     prompt: str
-    workspace_path: str
+    workspace_path: str | None = None
 
 
 class SendMessageRequest(BaseModel):
@@ -137,6 +142,17 @@ def platform_health() -> dict:
     }
 
 
+def _mission_workspace_dir(mission: Mission) -> str:
+    """A dedicated, auto-created folder for this mission's work, used
+    whenever a task doesn't specify its own workspace_path. The short id
+    suffix guarantees uniqueness even if two missions share a name — no
+    marker file or disk-collision detection needed."""
+    slug = re.sub(r"[^a-z0-9]+", "-", mission.name.lower()).strip("-") or "mission"
+    workspace = _MISSIONS_ROOT / f"{slug}-{mission.id[:8]}"
+    workspace.mkdir(parents=True, exist_ok=True)
+    return str(workspace)
+
+
 @app.post("/api/missions", response_model=Mission)
 async def create_mission(req: CreateMissionRequest) -> Mission:
     with get_session() as session:
@@ -146,7 +162,7 @@ async def create_mission(req: CreateMissionRequest) -> Mission:
         session.refresh(mission)
 
     if req.goal:
-        _start_pipeline(mission.id, req.goal, req.workspace_path or ".")
+        _start_pipeline(mission.id, req.goal, req.workspace_path or _mission_workspace_dir(mission))
 
     return mission
 
@@ -207,7 +223,7 @@ async def create_task(mission_id: str, req: CreateTaskRequest) -> MissionTask:
             mission_id=mission_id,
             runtime=req.runtime.value,
             prompt=req.prompt,
-            workspace_path=req.workspace_path,
+            workspace_path=req.workspace_path or _mission_workspace_dir(mission),
         )
         session.add(task)
         session.commit()
@@ -476,7 +492,7 @@ def mission_log(mission_id: str) -> list[dict]:
 
 class RunPipelineRequest(BaseModel):
     goal: str
-    workspace_path: str
+    workspace_path: str | None = None
 
 
 def _start_pipeline(mission_id: str, goal: str, workspace_path: str) -> tuple[str, str]:
@@ -504,7 +520,9 @@ async def run_pipeline(mission_id: str, req: RunPipelineRequest) -> dict:
         if mission is None:
             raise HTTPException(404, "mission not found")
 
-    pipeline_run_id, orchestrator_task_id = _start_pipeline(mission_id, req.goal, req.workspace_path)
+    pipeline_run_id, orchestrator_task_id = _start_pipeline(
+        mission_id, req.goal, req.workspace_path or _mission_workspace_dir(mission)
+    )
 
     with get_session() as session:
         orchestrator_task = session.get(MissionTask, orchestrator_task_id)
