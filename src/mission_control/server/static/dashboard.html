@@ -131,6 +131,12 @@
   #activityList .row .ago { color: var(--dimmer); display: inline-block; width: 4.5rem; vertical-align: top; }
   #activityList .row b { color: var(--white); font-weight: normal; }
 
+  #previewPanel h2 span { display: flex; align-items: center; gap: 0.7rem; }
+  #previewPanel h2 button { padding: 0.2rem 0.6rem; font-size: 0.85em; }
+  #previewPanel h2 a { color: var(--dim); font-size: 0.85em; text-decoration: none; }
+  #previewPanel h2 a:hover { color: var(--accent); }
+  #previewFrame { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 3px; background: #fff; }
+
   #activeTaskMeta { color: var(--dim); line-height: 1.7; }
   #activeTaskMeta b { color: var(--text); font-weight: normal; }
   #activeTaskMeta .prompt-block { border-left: 2px solid var(--border-lit); padding: 0.5rem 0.8rem;
@@ -233,6 +239,16 @@
   <div class="panel" id="activityPanel" style="margin-bottom:0.6rem;">
     <h2>Activity <span class="count" id="activityCount"></span></h2>
     <div id="activityList"><span class="t-empty">no activity yet</span></div>
+  </div>
+
+  <div class="panel" id="previewPanel" style="margin-bottom:0.6rem;">
+    <h2>Preview
+      <span>
+        <button type="button" id="previewReloadBtn">Reload</button>
+        <a id="previewOpenLink" href="#" target="_blank" rel="noopener">Open in new tab ↗</a>
+      </span>
+    </h2>
+    <iframe id="previewFrame"></iframe>
   </div>
 
   <div id="detailGrid">
@@ -382,7 +398,14 @@ function openMission(missionId) {
   state.currentTaskId = null;
   document.getElementById("viewMissions").classList.add("hidden");
   document.getElementById("viewDetail").classList.remove("hidden");
+  setPreviewUrl(missionId);
   refreshDetail();
+}
+
+function setPreviewUrl(missionId) {
+  const url = `/api/missions/${missionId}/preview?t=${Date.now()}`;
+  document.getElementById("previewFrame").src = url;
+  document.getElementById("previewOpenLink").href = `/api/missions/${missionId}/preview`;
 }
 
 function closeMission() {
@@ -398,6 +421,10 @@ function closeMission() {
   loadMissions();
 }
 document.getElementById("backBtn").addEventListener("click", closeMission);
+
+document.getElementById("previewReloadBtn").addEventListener("click", () => {
+  if (state.currentMissionId) setPreviewUrl(state.currentMissionId);
+});
 
 document.getElementById("taskForm").addEventListener("submit", async (e) => {
   e.preventDefault();
