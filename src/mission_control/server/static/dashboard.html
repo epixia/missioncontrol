@@ -634,11 +634,26 @@ function renderActivity(log, tasks, tickets) {
     }
   }
 
+  // Group pipeline tasks by run so each one's handoff target (the next role
+  // in Orchestrator -> Coder -> Reviewer) can be shown alongside who spoke —
+  // "who is talking to who," not just a role label with no direction.
+  const runs = {};
   for (const t of tasks) {
-    if (!t.role) continue;  // only pipeline agents "talk" in this feed
-    const text = t.result_text || t.error_detail;
-    if (!text) continue;
-    entries.push({ ts: t.updated_at, html: `<b>${escapeHtml(t.role)}:</b> ${mdBold(text.slice(0, 300))}` });
+    if (!t.role || !t.pipeline_run_id) continue;
+    (runs[t.pipeline_run_id] = runs[t.pipeline_run_id] || []).push(t);
+  }
+  for (const runTasks of Object.values(runs)) {
+    runTasks.sort((a, b) => AGENT_ROLE_ORDER.indexOf(a.role) - AGENT_ROLE_ORDER.indexOf(b.role));
+    for (let i = 0; i < runTasks.length; i++) {
+      const from = runTasks[i];
+      const text = from.result_text || from.error_detail;
+      if (!text) continue;
+      const to = runTasks[i + 1] ? runTasks[i + 1].role : "done";
+      entries.push({
+        ts: from.updated_at,
+        html: `<b>${escapeHtml(from.role)} → ${escapeHtml(to)}:</b> ${mdBold(text.slice(0, 300))}`,
+      });
+    }
   }
 
   for (const tk of tickets) {
