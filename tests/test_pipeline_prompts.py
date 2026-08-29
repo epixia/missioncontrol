@@ -56,6 +56,31 @@ def test_build_reviewer_prompt_includes_kanban_instructions_for_its_mission():
     assert "/api/missions/mission-42/tickets" in prompt
 
 
+def test_build_orchestrator_prompt_requires_ticket_creation():
+    prompt = build_orchestrator_prompt("goal", "mission-1")
+    assert "required, not optional" in prompt
+    assert "create one ticket" in prompt
+    assert '"todo"' in prompt
+
+
+def test_build_coder_prompt_requires_moving_tickets():
+    prompt = build_coder_prompt("goal", "plan", "mission-1")
+    assert "required, not optional" in prompt
+    assert '"doing"' in prompt
+    assert '"done"' in prompt
+
+
+def test_build_reviewer_prompt_requires_a_comment():
+    prompt = build_reviewer_prompt("goal", "work", "mission-1")
+    assert "required, not optional" in prompt
+    assert "leave at least one comment" in prompt
+
+
+def test_kanban_instructions_includes_a_list_example_so_agents_can_find_each_others_tickets():
+    prompt = build_coder_prompt("goal", "plan", "mission-1")
+    assert "List tickets" in prompt
+
+
 def test_kanban_block_starts_with_the_marker_the_dashboard_splits_on():
     """dashboard.html's extractGoal() truncates the stored prompt at
     KANBAN_MARKER. If the kanban paragraph's opening words ever change

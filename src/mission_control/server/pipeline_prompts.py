@@ -44,16 +44,37 @@ REVIEWER_PROMPT = (
 KANBAN_MARKER = "\n\nYou have a shared kanban board"
 
 
-def kanban_instructions(mission_id: str) -> str:
+_ORCHESTRATOR_KANBAN_DIRECTIVE = (
+    "This is required, not optional: before you finish, create one ticket "
+    "in the \"todo\" column for each distinct step in your plan, so the "
+    "Coder and the user can see the breakdown."
+)
+
+_CODER_KANBAN_DIRECTIVE = (
+    "This is required, not optional: move each ticket from the "
+    "Orchestrator's plan to \"doing\" when you start that step and to "
+    "\"done\" when you finish it. If no tickets exist yet, create one per "
+    "step first, then work through them the same way."
+)
+
+_REVIEWER_KANBAN_DIRECTIVE = (
+    "This is required, not optional: leave at least one comment on the "
+    "board summarizing your verdict before you finish — comment on an "
+    "existing ticket if one fits, or create one if none exist."
+)
+
+
+def kanban_instructions(mission_id: str, directive: str) -> str:
     base = f"http://127.0.0.1:8420/api/missions/{mission_id}/tickets"
     return (
         f"{KANBAN_MARKER} for this mission, visible to "
-        "the user and to the other agents in this pipeline. Use it to "
-        "break work into tickets and show progress. You have network "
-        "access to Mission Control's own local API via curl:\n"
+        "the user and to the other agents in this pipeline. You have "
+        "network access to Mission Control's own local API via curl:\n"
         f"- Create a ticket: curl -s -X POST '{base}?author_role=<your-role>' "
         "-H 'Content-Type: application/json' "
-        '-d \'{"title": "...", "description": "..."}\'\n'
+        '-d \'{"title": "...", "description": "..."}\' '
+        "(the response JSON includes the new ticket's \"id\")\n"
+        f"- List tickets (to find one another agent created): curl -s '{base}'\n"
         "- Move a ticket (column is one of backlog/todo/doing/done): "
         "curl -s -X PATCH 'http://127.0.0.1:8420/api/tickets/<ticket_id>' "
         "-H 'Content-Type: application/json' -d '{\"column\": \"doing\"}'\n"
@@ -61,21 +82,26 @@ def kanban_instructions(mission_id: str) -> str:
         "curl -s -X POST "
         "'http://127.0.0.1:8420/api/tickets/<ticket_id>/comments?author_role=<your-role>' "
         "-H 'Content-Type: application/json' -d '{\"text\": \"...\"}'\n"
-        "This is optional but encouraged — use it to make your work "
-        "visible, not as a substitute for your actual output."
+        f"{directive}"
     )
 
 
 def build_orchestrator_prompt(goal: str, mission_id: str) -> str:
-    return f"{ORCHESTRATOR_PROMPT}{goal}{kanban_instructions(mission_id)}"
+    return f"{ORCHESTRATOR_PROMPT}{goal}{kanban_instructions(mission_id, _ORCHESTRATOR_KANBAN_DIRECTIVE)}"
 
 
 def build_coder_prompt(goal: str, orchestrator_result: str, mission_id: str) -> str:
-    return f"{CODER_PROMPT}{goal}\n\nOrchestrator's plan:\n{orchestrator_result}{kanban_instructions(mission_id)}"
+    return (
+        f"{CODER_PROMPT}{goal}\n\nOrchestrator's plan:\n{orchestrator_result}"
+        f"{kanban_instructions(mission_id, _CODER_KANBAN_DIRECTIVE)}"
+    )
 
 
 def build_reviewer_prompt(goal: str, coder_result: str, mission_id: str) -> str:
-    return f"{REVIEWER_PROMPT}{goal}\n\nCoder's work:\n{coder_result}{kanban_instructions(mission_id)}"
+    return (
+        f"{REVIEWER_PROMPT}{goal}\n\nCoder's work:\n{coder_result}"
+        f"{kanban_instructions(mission_id, _REVIEWER_KANBAN_DIRECTIVE)}"
+    )
 
 
 def extract_claude_code_result_text(event_type: str, payload: dict[str, Any]) -> str | None:
